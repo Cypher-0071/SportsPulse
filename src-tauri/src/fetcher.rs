@@ -1,10 +1,12 @@
 use std::time::Duration;
 use reqwest::Client;
+use tauri::{Emitter, Manager};
+use tauri_plugin_positioner::{Position, WindowExt};
 use crate::cache::ScoreCache;
-use crate::parser::{parse_live_indian_match, parse_match_detail};
+use crate::parser::{parse_live_indian_match, parse_match_detail, parse_latest_event};
 use crate::models::MatchStatus;
 
-pub async fn start_polling(cache: ScoreCache) {
+pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle) {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".parse().unwrap());
     headers.insert("Accept", "application/json".parse().unwrap());
@@ -16,6 +18,8 @@ pub async fn start_polling(cache: ScoreCache) {
         .default_headers(headers)
         .build()
         .unwrap_or_else(|_| Client::new());
+
+    let mut last_ball_id: Option<String> = None;
 
     loop {
         let mut sleep_duration = Duration::from_secs(300); // 5 minutes default
@@ -38,6 +42,16 @@ pub async fn start_polling(cache: ScoreCache) {
                                     if let Some(score) = parse_match_detail(&detail_json, &series_id, &match_id) {
                                         println!("Fetched live score: {:?}", score);
                                         cache.set(Some(score.clone()));
+                                        
+                                        // Detect and handle new match events
+                                        if let Some(event) = parse_latest_event(&detail_json, &mut last_ball_id) {
+                                            println!("New match event: {:?}", event);
+                                            let _ = app_handle.emit("match-event", &event);
+                                            if let Some(mini_window) = app_handle.get_webview_window("mini_popup") {
+                                                let _ = mini_window.move_window(Position::BottomRight);
+                                                let _ = mini_window.show();
+                                            }
+                                        }
                                         
                                         sleep_duration = match score.status {
                                             MatchStatus::Live => Duration::from_millis(500),

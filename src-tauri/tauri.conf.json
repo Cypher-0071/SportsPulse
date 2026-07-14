@@ -21,6 +21,20 @@
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "visible": false
+      },
+      {
+        "label": "mini_popup",
+        "title": "sportspulse-alert",
+        "width": 300,
+        "height": 100,
+        "resizable": false,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "url": "mini_popup.html"
       }
     ],
     "security": {

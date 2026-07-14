@@ -53,7 +53,7 @@ pub fn run() {
             }
 
             // Spawn the background fetcher thread
-            tauri::async_runtime::spawn(fetcher::start_polling(cache));
+            tauri::async_runtime::spawn(fetcher::start_polling(cache, app.handle().clone()));
 
             // Create a Quit menu item
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;

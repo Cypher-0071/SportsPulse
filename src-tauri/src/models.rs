@@ -35,3 +35,18 @@ pub struct MatchScore {
     pub target: Option<u32>,
     pub runs_needed: Option<u32>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum MatchEventType {
+    Wicket,
+    Boundary,
+    OverComplete,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatchEvent {
+    pub event_type: MatchEventType,
+    pub title: String,
+    pub description: String,
+    pub score: String,
+}

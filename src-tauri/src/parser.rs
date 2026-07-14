@@ -1,4 +1,4 @@
-use crate::models::{MatchScore, MatchStatus, TeamScore};
+use crate::models::{MatchScore, MatchStatus, TeamScore, MatchEvent, MatchEventType};
 
 pub fn parse_live_indian_match(value: &serde_json::Value) -> Option<(String, String)> {
     let sports = value.get("sports")?.as_array()?;
@@ -212,4 +212,89 @@ fn calculate_rrr(runs_needed: u32, total_overs: f32, current_overs: f32) -> f32 
         let balls_remaining = total_balls - current_balls;
         (runs_needed as f32 / balls_remaining as f32) * 6.0
     }
+}
+
+pub fn parse_latest_event(value: &serde_json::Value, last_ball_id: &mut Option<String>) -> Option<MatchEvent> {
+    let header = value.get("header")?;
+    let competitions = header.get("competitions")?.as_array()?;
+    let comp = competitions.get(0)?;
+    let commentaries = comp.get("commentaries")?.as_object()?;
+    
+    let mut latest_key: Option<u64> = None;
+    for key_str in commentaries.keys() {
+        if let Ok(key_num) = key_str.parse::<u64>() {
+            if latest_key.is_none() || Some(key_num) > latest_key {
+                latest_key = Some(key_num);
+            }
+        }
+    }
+    
+    let latest_key_str = latest_key?.to_string();
+    if latest_key_str == "999999999999999" {
+        return None;
+    }
+    
+    let ball_data = commentaries.get(&latest_key_str)?;
+    
+    let is_new = match last_ball_id {
+        Some(prev) => prev != &latest_key_str,
+        None => {
+            *last_ball_id = Some(latest_key_str.clone());
+            false
+        }
+    };
+    
+    if !is_new {
+        return None;
+    }
+    
+    *last_ball_id = Some(latest_key_str);
+    
+    let home_score = ball_data.get("homeScore").and_then(|v| v.as_str()).unwrap_or("");
+    let over_num = ball_data.get("over").and_then(|o| o.get("overs").and_then(|v| v.as_f64())).unwrap_or(0.0);
+    let team_abbr = ball_data.get("team").and_then(|t| t.get("abbreviation").and_then(|v| v.as_str())).unwrap_or("");
+    let score_str = format!("{} {} ({} ov)", team_abbr, home_score, over_num);
+
+    let dismissal = ball_data.get("dismissal");
+    let is_dismissal = dismissal.and_then(|d| d.get("dismissal").and_then(|v| v.as_bool())).unwrap_or(false);
+    if is_dismissal {
+        let batsman_name = dismissal.and_then(|d| d.get("batsman").and_then(|b| b.get("athlete").and_then(|a| a.get("displayName").and_then(|v| v.as_str())))).unwrap_or("Batsman");
+        let dismissal_text = dismissal.and_then(|d| d.get("text").and_then(|v| v.as_str())).unwrap_or("");
+        let short_desc = ball_data.get("shortText").and_then(|v| v.as_str()).unwrap_or("");
+        return Some(MatchEvent {
+            event_type: MatchEventType::Wicket,
+            title: "Wicket!".to_string(),
+            description: format!("{}: {} ({})", batsman_name, dismissal_text, short_desc),
+            score: score_str,
+        });
+    }
+
+    let is_boundary = ball_data.get("boundary").and_then(|v| v.as_bool()).unwrap_or(false);
+    let score_value = ball_data.get("scoreValue").and_then(|v| v.as_u64()).unwrap_or(0);
+    if is_boundary && (score_value == 4 || score_value == 6) {
+        let short_desc = ball_data.get("shortText").and_then(|v| v.as_str()).unwrap_or("");
+        return Some(MatchEvent {
+            event_type: MatchEventType::Boundary,
+            title: if score_value == 6 { "SIX!" } else { "FOUR!" }.to_string(),
+            description: short_desc.to_string(),
+            score: score_str,
+        });
+    }
+
+    let is_over_complete = ball_data.get("over").and_then(|o| o.get("complete").and_then(|v| v.as_bool())).unwrap_or(false);
+    if is_over_complete {
+        let over_info = ball_data.get("over");
+        let over_number = over_info.and_then(|o| o.get("number").and_then(|v| v.as_u64())).unwrap_or(0);
+        let runs_in_over = over_info.and_then(|o| o.get("runs").and_then(|v| v.as_u64())).unwrap_or(0);
+        let wickets_in_over = over_info.and_then(|o| o.get("wickets").and_then(|v| v.as_u64())).unwrap_or(0);
+        
+        return Some(MatchEvent {
+            event_type: MatchEventType::OverComplete,
+            title: format!("End of Over {}", over_number),
+            description: format!("Summary: {} runs, {} wickets", runs_in_over, wickets_in_over),
+            score: score_str,
+        });
+    }
+
+    None
 }
