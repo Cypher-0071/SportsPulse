@@ -8,6 +8,7 @@ mod models;
 mod cache;
 mod parser;
 mod fetcher;
+mod match_state;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -35,6 +36,7 @@ fn hide_mini_popup(app: tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let cache = cache::ScoreCache::new();
+    let match_state = match_state::ActiveMatchesState::new();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -57,6 +59,7 @@ pub fn run() {
             })
             .build())
         .manage(cache.clone())
+        .manage(match_state.clone())
         .invoke_handler(tauri::generate_handler![greet, get_score, get_latest_event, hide_mini_popup])
         .setup(move |app| {
             // Register global shortcut Ctrl+Alt+Space
@@ -65,14 +68,14 @@ pub fn run() {
             }
 
             // Spawn the background fetcher thread
-            tauri::async_runtime::spawn(fetcher::start_polling(cache, app.handle().clone()));
+            tauri::async_runtime::spawn(fetcher::start_polling(cache, app.handle().clone(), match_state.clone()));
 
             // Create a Quit menu item
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&quit_i])?;
 
-            // Create system tray icon
-            let _tray = TrayIconBuilder::new()
+            // Create system tray icon with explicit ID "main"
+            let _tray = TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
                 .on_menu_event(|app, event| {
@@ -80,7 +83,20 @@ pub fn run() {
                         "quit" => {
                             app.exit(0);
                         }
-                        _ => {}
+                        other => {
+                            if other.starts_with("match_") {
+                                let parts: Vec<&str> = other.split('_').collect();
+                                if parts.len() == 3 {
+                                    let series_id = parts[1].to_string();
+                                    let match_id = parts[2].to_string();
+                                    let match_state = app.state::<match_state::ActiveMatchesState>();
+                                    if let Ok(mut sel) = match_state.selected_match.lock() {
+                                        *sel = Some((series_id, match_id));
+                                        println!("User selected match: series={}, match={}", parts[1], parts[2]);
+                                    };
+                                }
+                            }
+                        }
                     }
                 })
                 .on_tray_icon_event(|tray, event| {

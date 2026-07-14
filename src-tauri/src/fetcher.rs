@@ -3,10 +3,11 @@ use reqwest::Client;
 use tauri::{Emitter, Manager};
 use tauri_plugin_positioner::{Position, WindowExt};
 use crate::cache::ScoreCache;
-use crate::parser::{parse_live_indian_match, parse_match_detail, parse_latest_event};
+use crate::parser::{parse_all_live_indian_matches, parse_match_detail, parse_latest_event};
 use crate::models::MatchStatus;
+use crate::match_state::ActiveMatchesState;
 
-pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle) {
+pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle, match_state: ActiveMatchesState) {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".parse().unwrap());
     headers.insert("Accept", "application/json".parse().unwrap());
@@ -30,7 +31,37 @@ pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle) {
         {
             Ok(resp) => {
                 if let Ok(json) = resp.json::<serde_json::Value>().await {
-                    if let Some((series_id, match_id)) = parse_live_indian_match(&json) {
+                    let discovered_matches = parse_all_live_indian_matches(&json);
+                    
+                    // Check if live matches list changed
+                    let mut matches_changed = false;
+                    {
+                        if let Ok(mut active_m) = match_state.active_matches.lock() {
+                            if *active_m != discovered_matches {
+                                *active_m = discovered_matches.clone();
+                                matches_changed = true;
+                            }
+                        }
+                    }
+
+                    if matches_changed {
+                        rebuild_tray_menu(&app_handle, &discovered_matches);
+                    }
+
+                    // Determine which match to track
+                    let selected = {
+                        if let Ok(sel) = match_state.selected_match.lock() {
+                            sel.clone()
+                        } else {
+                            None
+                        }
+                    };
+
+                    let match_to_track = selected.or_else(|| {
+                        discovered_matches.first().map(|(series_id, match_id, _)| (series_id.clone(), match_id.clone()))
+                    });
+
+                    if let Some((series_id, match_id)) = match_to_track {
                         let detail_url = format!(
                             "https://site.api.espn.com/apis/site/v2/sports/cricket/{}/summary?event={}",
                             series_id, match_id
@@ -90,5 +121,41 @@ pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle) {
         }
 
         tokio::time::sleep(sleep_duration).await;
+    }
+}
+
+fn rebuild_tray_menu(app_handle: &tauri::AppHandle, matches: &[(String, String, String)]) {
+    use tauri::menu::{Menu, MenuItem, Submenu};
+    
+    let quit_i = match MenuItem::with_id(app_handle, "quit", "Quit", true, None::<&str>) {
+        Ok(item) => item,
+        Err(_) => return,
+    };
+    
+    let menu = match Menu::new(app_handle) {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+    let _ = menu.append(&quit_i);
+    
+    if !matches.is_empty() {
+        if let Ok(select_match_submenu) = Submenu::new(app_handle, "Select Match", true) {
+            for (series_id, match_id, match_title) in matches {
+                if let Ok(item) = MenuItem::with_id(
+                    app_handle,
+                    format!("match_{}_{}", series_id, match_id),
+                    match_title,
+                    true,
+                    None::<&str>,
+                ) {
+                    let _ = select_match_submenu.append(&item);
+                }
+            }
+            let _ = menu.append(&select_match_submenu);
+        }
+    }
+    
+    if let Some(tray) = app_handle.tray_by_id("main") {
+        let _ = tray.set_menu(Some(menu));
     }
 }
