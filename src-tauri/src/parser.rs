@@ -17,7 +17,7 @@ pub fn parse_live_indian_match(value: &serde_json::Value) -> Option<(String, Str
                         let id = comp.get("id")?.as_str()?;
                         let display_name = comp.get("displayName")?.as_str()?;
                         
-                        if id == "6" || display_name.to_lowercase().contains("india") {
+                        if id == "6" || display_name.to_lowercase() == "india" {
                             is_india_match = true;
                             break;
                         }
