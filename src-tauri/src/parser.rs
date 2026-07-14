@@ -176,6 +176,8 @@ fn parse_competitor(comp: &serde_json::Value) -> TeamScore {
         }
     }
 
+    let is_winner = comp.get("winner").and_then(|v| v.as_bool()).unwrap_or(false);
+
     TeamScore {
         id,
         name,
@@ -185,6 +187,7 @@ fn parse_competitor(comp: &serde_json::Value) -> TeamScore {
         wickets,
         overs,
         is_batting,
+        is_winner,
     }
 }
 

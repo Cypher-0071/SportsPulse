@@ -10,11 +10,6 @@ mod parser;
 mod fetcher;
 mod match_state;
 
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
 
 #[tauri::command]
 fn get_score(state: tauri::State<'_, cache::ScoreCache>) -> Option<models::MatchScore> {
@@ -60,7 +55,7 @@ pub fn run() {
             .build())
         .manage(cache.clone())
         .manage(match_state.clone())
-        .invoke_handler(tauri::generate_handler![greet, get_score, get_latest_event, hide_mini_popup])
+        .invoke_handler(tauri::generate_handler![get_score, get_latest_event, hide_mini_popup])
         .setup(move |app| {
             // Register global shortcut Ctrl+Alt+Space
             if let Ok(shortcut) = "Ctrl+Alt+Space".parse::<Shortcut>() {

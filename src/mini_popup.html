@@ -5,134 +5,230 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SportsPulse Alert</title>
     <style>
+      html { background: transparent; }
+
       :root {
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", sans-serif;
         font-size: 13px;
-        line-height: 1.3;
-        color: #e4e6eb;
-        background-color: transparent;
+        line-height: 1.4;
+        color: #e8e8ec;
+        background: transparent;
+        -webkit-font-smoothing: antialiased;
         user-select: none;
       }
 
       body {
         margin: 0;
         padding: 0;
-        width: 300px;
-        height: 100px;
+        width: 100%;
+        height: 100vh;
         overflow: hidden;
-        background-color: transparent;
-        display: flex;
-        justify-content: center;
-        align-items: center;
+        background: transparent;
       }
 
-      .alert-card {
-        width: 280px;
-        height: 80px;
-        background: rgba(18, 18, 22, 0.96);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 8px;
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-        display: flex;
-        flex-direction: column;
-        justify-content: space-between;
-        padding: 8px 10px;
+      .popup {
+        width: 100%;
+        height: 100vh;
+        background: #111116;
+        border: 1px solid #232329;
+        border-radius: 10px;
         box-sizing: border-box;
-        border-left: 4px solid #00b4d8; /* Default accent */
-        animation: slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+        display: flex;
+        align-items: stretch;
+        overflow: hidden;
+        animation: slideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1);
         position: relative;
       }
 
-      .header {
+      /* Colored left strip */
+      .accent-strip {
+        width: 4px;
+        flex-shrink: 0;
+        background: #00b4d8;
+        transition: background 0.2s;
+      }
+      .popup.four   .accent-strip { background: #f0b429; }
+      .popup.six    .accent-strip { background: #e63946; }
+      .popup.wicket .accent-strip { background: #ff4a4a; }
+      
+      /* Win celebration animated gradient accent */
+      .popup.win .accent-strip {
+        background: linear-gradient(to bottom, #ff007f, #7f00ff, #00f0ff, #00ff7f, #ffea00);
+        background-size: 100% 400%;
+        animation: rainbowAccent 2.5s ease infinite alternate;
+      }
+
+      /* Big emoji / run count on the left */
+      .event-icon {
         display: flex;
-        justify-content: space-between;
         align-items: center;
+        justify-content: center;
+        width: 48px;
+        flex-shrink: 0;
+        font-size: 24px;
+        font-weight: 900;
+        color: #f0b429;
+        letter-spacing: -1px;
+      }
+      .popup.six    .event-icon { color: #e63946; }
+      .popup.wicket .event-icon { color: #ff4a4a; }
+      .popup.win    .event-icon {
+        animation: rainbowText 2.5s ease infinite alternate;
       }
 
-      .title {
-        font-size: 11px;
-        font-weight: 800;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
+      /* Text area */
+      .event-body {
+        flex: 1;
+        padding: 6px 8px 6px 0;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 1px;
+        min-width: 0;
       }
 
-      .close-btn {
-        background: transparent;
-        border: none;
-        color: #a0a5b5;
-        font-size: 12px;
-        font-weight: bold;
-        cursor: pointer;
-        padding: 0;
-        margin: 0;
-        line-height: 1;
-        transition: color 0.15s;
-      }
-
-      .close-btn:hover {
-        color: #ffffff;
-      }
-
-      .description {
-        font-size: 11.5px;
-        font-weight: 600;
+      .event-headline {
+        font-size: 13px;
+        font-weight: 700;
         color: #ffffff;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        margin: 4px 0;
       }
 
-      .score {
-        font-size: 10px;
-        font-weight: 700;
-        color: #a0a5b5;
+      .event-detail {
+        font-size: 12px;
+        font-weight: 600;
+        color: #8b8fa0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
 
-      /* Event specific accents */
-      .alert-card.wicket {
-        border-left-color: #ff4a4a;
+      /* Close button */
+      .close-btn {
+        position: absolute;
+        top: 6px;
+        right: 8px;
+        background: transparent;
+        border: none;
+        color: #3a3a42;
+        font-size: 14px;
+        line-height: 1;
+        cursor: pointer;
+        padding: 0;
+        transition: color 0.15s;
       }
-      .alert-card.wicket .title {
-        color: #ff4a4a;
+      .close-btn:hover { color: #6b6f7b; }
+
+      @keyframes slideUp {
+        from { opacity: 0; transform: translateY(12px); }
+        to   { opacity: 1; transform: translateY(0); }
       }
 
-      .alert-card.boundary {
-        border-left-color: #ffb703;
-      }
-      .alert-card.boundary .title {
-        color: #ffb703;
+      @keyframes rainbowAccent {
+        0% { background-position: 0% 0%; }
+        100% { background-position: 0% 100%; }
       }
 
-      .alert-card.over-complete {
-        border-left-color: #74c69d;
-      }
-      .alert-card.over-complete .title {
-        color: #74c69d;
-      }
-
-      @keyframes slideIn {
-        from {
-          transform: translateY(20px);
-          opacity: 0;
-        }
-        to {
-          transform: translateY(0);
-          opacity: 1;
-        }
+      @keyframes rainbowText {
+        0%   { color: #ff007f; }
+        33%  { color: #7f00ff; }
+        66%  { color: #00f0ff; }
+        100% { color: #ffea00; }
       }
     </style>
   </head>
   <body>
-    <div id="alert-card" class="alert-card">
-      <div class="header">
-        <span id="event-title" class="title">Alert</span>
-        <button id="close-btn" class="close-btn">×</button>
+    <div id="popup" class="popup">
+      <div class="accent-strip"></div>
+      <div id="event-icon" class="event-icon">4</div>
+      <div class="event-body">
+        <div id="event-headline" class="event-headline">—</div>
+        <div id="event-detail" class="event-detail">—</div>
       </div>
-      <div id="event-desc" class="description">Event description detail...</div>
-      <div id="event-score" class="score">Score update</div>
+      <button id="close-btn" class="close-btn">×</button>
     </div>
 
-    <script type="module" src="mini_popup.js"></script>
+    <script>
+      const { invoke } = window.__TAURI__.core;
+      const { listen } = window.__TAURI__.event;
+
+      const popup      = document.getElementById("popup");
+      const iconEl     = document.getElementById("event-icon");
+      const headlineEl = document.getElementById("event-headline");
+      const detailEl   = document.getElementById("event-detail");
+      const closeBtn   = document.getElementById("close-btn");
+
+      closeBtn.addEventListener("click", () => invoke("hide_mini_popup"));
+
+      function getCleanEventDetail(description, eventType) {
+        if (!description) return "";
+
+        if (eventType === "Wicket") {
+          if (description.includes(":")) {
+            return description.split(":")[0].trim();
+          }
+          return description;
+        }
+
+        if (eventType === "Boundary") {
+          if (description.includes(" to ")) {
+            let afterTo = description.split(" to ")[1];
+            if (afterTo && afterTo.includes(",")) {
+              return afterTo.split(",")[0].trim();
+            }
+            return afterTo || description;
+          }
+        }
+
+        if (eventType === "Win") {
+          return description;
+        }
+
+        return description;
+      }
+
+      function applyEvent(payload) {
+        if (!payload) return;
+
+        const type = payload.event_type;  // "Boundary" | "Wicket" | "Win"
+        const isSix = payload.title && payload.title.includes("SIX");
+
+        // CSS class for color theme
+        popup.className = "popup";
+        if (type === "Wicket") {
+          popup.classList.add("wicket");
+          iconEl.textContent = "🎯";
+        } else if (type === "Boundary") {
+          if (isSix) {
+            popup.classList.add("six");
+            iconEl.textContent = "6";
+          } else {
+            popup.classList.add("four");
+            iconEl.textContent = "4";
+          }
+        } else if (type === "Win") {
+          popup.classList.add("win");
+          iconEl.textContent = "🏆";
+        }
+
+        headlineEl.textContent = payload.title || "Event";
+        detailEl.textContent   = getCleanEventDetail(payload.description, type);
+      }
+
+      async function fetchAndApply() {
+        try {
+          const ev = await invoke("get_latest_event");
+          applyEvent(ev);
+        } catch (e) {
+          console.error("get_latest_event failed:", e);
+        }
+      }
+
+      listen("match-event", (e) => applyEvent(e.payload));
+      window.addEventListener("focus", fetchAndApply);
+      fetchAndApply();
+    </script>
   </body>
 </html>

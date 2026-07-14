@@ -12,34 +12,37 @@
     <!-- Main Scoreboard Popup Card -->
     <main id="scoreboard-card" class="card hidden">
       <header class="header">
-        <span id="match-title" class="title">IND vs ENG • 1st ODI</span>
-        <span id="live-indicator" class="live-tag">🔴 LIVE</span>
+        <span id="match-title" class="title">IND vs ENG</span>
+        <span id="live-indicator" class="live-tag">LIVE</span>
       </header>
       
       <section class="scores">
-        <!-- Team 1 Row -->
         <div id="team1-row" class="team-row">
           <div class="team-info">
             <span id="team1-name" class="team-name">INDIA</span>
-            <span id="team1-batting-dot" class="batting-dot hidden">🏏</span>
+            <span id="team1-batting-dot" class="batting-dot hidden">●</span>
           </div>
-          <span id="team1-score" class="team-score">0/0 (0.0 ov)</span>
+          <span id="team1-score" class="team-score">0/0 (0.0)</span>
         </div>
         
-        <!-- Team 2 Row -->
         <div id="team2-row" class="team-row">
           <div class="team-info">
             <span id="team2-name" class="team-name">ENGLAND</span>
-            <span id="team2-batting-dot" class="batting-dot hidden">🏏</span>
+            <span id="team2-batting-dot" class="batting-dot hidden">●</span>
           </div>
           <span id="team2-score" class="team-score">Yet to bat</span>
         </div>
       </section>
       
       <footer id="stats-row" class="stats-bar">
-        <div class="stat-item">CRR: <span id="crr-val">0.00</span></div>
-        <div id="rrr-container" class="stat-item hidden">RRR: <span id="rrr-val">0.00</span></div>
-        <div id="need-container" class="stat-item hidden"><span id="need-val">Need 0 runs</span></div>
+        <div class="stats-left">
+          <div class="stat-item">CRR <span id="crr-val">0.00</span></div>
+          <span id="rrr-sep" class="stat-sep hidden">·</span>
+          <div id="rrr-container" class="stat-item hidden">RRR <span id="rrr-val">0.00</span></div>
+          <span id="need-sep" class="stat-sep hidden">·</span>
+          <div id="need-container" class="stat-item hidden"><span id="need-val">Need 0</span></div>
+        </div>
+        <div id="target-container" class="stat-item hidden target-right">TGT <span id="target-val">0</span></div>
       </footer>
     </main>
 

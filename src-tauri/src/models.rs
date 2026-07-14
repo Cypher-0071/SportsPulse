@@ -19,6 +19,7 @@ pub struct TeamScore {
     pub wickets: u32,
     pub overs: f32,
     pub is_batting: bool,
+    pub is_winner: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,6 +42,7 @@ pub struct MatchScore {
 pub enum MatchEventType {
     Wicket,
     Boundary,
+    Win,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
