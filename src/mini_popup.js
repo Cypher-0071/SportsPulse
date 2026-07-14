@@ -1,5 +1,5 @@
+const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
-const { getCurrentWindow } = window.__TAURI__.window;
 
 const alertCard = document.getElementById("alert-card");
 const eventTitle = document.getElementById("event-title");
@@ -7,41 +7,42 @@ const eventDesc = document.getElementById("event-desc");
 const eventScore = document.getElementById("event-score");
 const closeBtn = document.getElementById("close-btn");
 
-const currentWindow = getCurrentWindow();
-let dismissTimeout = null;
-
-// Handle manual close
+// Close button invokes Rust command to hide window
 closeBtn.addEventListener("click", () => {
-  if (dismissTimeout) clearTimeout(dismissTimeout);
-  currentWindow.hide();
+  invoke("hide_mini_popup");
 });
 
-// Listen for play events from the Rust backend
-listen("match-event", (event) => {
-  const payload = event.payload;
+// Helper to update DOM based on event payload
+function updateEventDetails(payload) {
   if (!payload) return;
 
-  // Clear previous auto-dismiss timer
-  if (dismissTimeout) clearTimeout(dismissTimeout);
-
-  // Update text content
   eventTitle.textContent = payload.title;
   eventDesc.textContent = payload.description;
   eventScore.textContent = payload.score;
 
-  // Reset classes and apply type-specific styling
+  // Set event card style class
   alertCard.className = "alert-card";
-  
   if (payload.event_type === "Wicket") {
     alertCard.classList.add("wicket");
   } else if (payload.event_type === "Boundary") {
     alertCard.classList.add("boundary");
-  } else if (payload.event_type === "OverComplete") {
-    alertCard.classList.add("over-complete");
   }
+}
 
-  // Auto-dismiss after 5 seconds
-  dismissTimeout = setTimeout(() => {
-    currentWindow.hide();
-  }, 5000);
+// Fetch latest event immediately on load (covers race conditions)
+async function loadLatestEvent() {
+  try {
+    const event = await invoke("get_latest_event");
+    updateEventDetails(event);
+  } catch (err) {
+    console.error("Failed to load latest event:", err);
+  }
+}
+
+// Listen for live event updates from the Rust background thread
+listen("match-event", (event) => {
+  updateEventDetails(event.payload);
 });
+
+// Initial load
+loadLatestEvent();

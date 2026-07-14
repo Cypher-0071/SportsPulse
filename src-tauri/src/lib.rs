@@ -20,6 +20,18 @@ fn get_score(state: tauri::State<'_, cache::ScoreCache>) -> Option<models::Match
     state.get()
 }
 
+#[tauri::command]
+fn get_latest_event(state: tauri::State<'_, cache::ScoreCache>) -> Option<models::MatchEvent> {
+    state.get_latest_event()
+}
+
+#[tauri::command]
+fn hide_mini_popup(app: tauri::AppHandle) {
+    if let Some(mini_window) = app.get_webview_window("mini_popup") {
+        let _ = mini_window.hide();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let cache = cache::ScoreCache::new();
@@ -45,7 +57,7 @@ pub fn run() {
             })
             .build())
         .manage(cache.clone())
-        .invoke_handler(tauri::generate_handler![greet, get_score])
+        .invoke_handler(tauri::generate_handler![greet, get_score, get_latest_event, hide_mini_popup])
         .setup(move |app| {
             // Register global shortcut Ctrl+Alt+Space
             if let Ok(shortcut) = "Ctrl+Alt+Space".parse::<Shortcut>() {

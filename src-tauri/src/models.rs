@@ -40,7 +40,6 @@ pub struct MatchScore {
 pub enum MatchEventType {
     Wicket,
     Boundary,
-    OverComplete,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

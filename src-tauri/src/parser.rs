@@ -281,20 +281,5 @@ pub fn parse_latest_event(value: &serde_json::Value, last_ball_id: &mut Option<S
         });
     }
 
-    let is_over_complete = ball_data.get("over").and_then(|o| o.get("complete").and_then(|v| v.as_bool())).unwrap_or(false);
-    if is_over_complete {
-        let over_info = ball_data.get("over");
-        let over_number = over_info.and_then(|o| o.get("number").and_then(|v| v.as_u64())).unwrap_or(0);
-        let runs_in_over = over_info.and_then(|o| o.get("runs").and_then(|v| v.as_u64())).unwrap_or(0);
-        let wickets_in_over = over_info.and_then(|o| o.get("wickets").and_then(|v| v.as_u64())).unwrap_or(0);
-        
-        return Some(MatchEvent {
-            event_type: MatchEventType::OverComplete,
-            title: format!("End of Over {}", over_number),
-            description: format!("Summary: {} runs, {} wickets", runs_in_over, wickets_in_over),
-            score: score_str,
-        });
-    }
-
     None
 }

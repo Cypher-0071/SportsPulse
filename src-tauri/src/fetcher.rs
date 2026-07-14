@@ -46,10 +46,18 @@ pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle) {
                                         // Detect and handle new match events
                                         if let Some(event) = parse_latest_event(&detail_json, &mut last_ball_id) {
                                             println!("New match event: {:?}", event);
+                                            cache.set_latest_event(Some(event.clone()));
                                             let _ = app_handle.emit("match-event", &event);
                                             if let Some(mini_window) = app_handle.get_webview_window("mini_popup") {
                                                 let _ = mini_window.move_window(Position::BottomRight);
                                                 let _ = mini_window.show();
+                                                
+                                                // Auto-hide the mini_popup window after 5 seconds from Rust side
+                                                let mini_window_clone = mini_window.clone();
+                                                tokio::spawn(async move {
+                                                    tokio::time::sleep(Duration::from_secs(5)).await;
+                                                    let _ = mini_window_clone.hide();
+                                                });
                                             }
                                         }
                                         
