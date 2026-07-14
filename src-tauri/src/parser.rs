@@ -229,6 +229,9 @@ pub fn parse_latest_event(value: &serde_json::Value, last_ball_id: &mut Option<S
     
     let mut latest_key: Option<u64> = None;
     for key_str in commentaries.keys() {
+        if key_str == "999999999999999" {
+            continue;
+        }
         if let Ok(key_num) = key_str.parse::<u64>() {
             if latest_key.is_none() || Some(key_num) > latest_key {
                 latest_key = Some(key_num);
@@ -237,10 +240,6 @@ pub fn parse_latest_event(value: &serde_json::Value, last_ball_id: &mut Option<S
     }
     
     let latest_key_str = latest_key?.to_string();
-    if latest_key_str == "999999999999999" {
-        return None;
-    }
-    
     let ball_data = commentaries.get(&latest_key_str)?;
     
     let is_new = match last_ball_id {
@@ -278,7 +277,7 @@ pub fn parse_latest_event(value: &serde_json::Value, last_ball_id: &mut Option<S
 
     let is_boundary = ball_data.get("boundary").and_then(|v| v.as_bool()).unwrap_or(false);
     let score_value = ball_data.get("scoreValue").and_then(|v| v.as_u64()).unwrap_or(0);
-    if is_boundary && (score_value == 4 || score_value == 6) {
+    if is_boundary || score_value == 4 || score_value == 6 {
         let short_desc = ball_data.get("shortText").and_then(|v| v.as_str()).unwrap_or("");
         return Some(MatchEvent {
             event_type: MatchEventType::Boundary,
