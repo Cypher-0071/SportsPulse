@@ -126,6 +126,11 @@ pub fn parse_match_detail(value: &serde_json::Value, series_id: &str, match_id: 
         }
     }
 
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
     Some(MatchScore {
         match_id: match_id.to_string(),
         series_id: series_id.to_string(),
@@ -138,6 +143,7 @@ pub fn parse_match_detail(value: &serde_json::Value, series_id: &str, match_id: 
         rrr,
         target,
         runs_needed,
+        timestamp,
     })
 }
 

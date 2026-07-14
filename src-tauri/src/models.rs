@@ -34,6 +34,7 @@ pub struct MatchScore {
     pub rrr: Option<f32>,
     pub target: Option<u32>,
     pub runs_needed: Option<u32>,
+    pub timestamp: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

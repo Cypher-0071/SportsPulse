@@ -37,8 +37,15 @@ async function updateScoreboard() {
     // Populate data
     matchTitleEl.textContent = score.match_title;
     
-    // Status text
-    if (score.status === "Live") {
+    // Status text (check if backend has stale data - offline handling)
+    const isStale = (Math.floor(Date.now() / 1000) - score.timestamp) > 15;
+    
+    if (isStale || !navigator.onLine) {
+      liveIndicatorEl.textContent = "⚠️ RECONNECTING";
+      liveIndicatorEl.style.background = "rgba(255, 183, 3, 0.2)";
+      liveIndicatorEl.style.color = "#ffb703";
+      liveIndicatorEl.style.borderColor = "rgba(255, 183, 3, 0.4)";
+    } else if (score.status === "Live") {
       liveIndicatorEl.textContent = "🔴 LIVE";
       liveIndicatorEl.style.background = "rgba(224, 36, 36, 0.2)";
       liveIndicatorEl.style.color = "#ff4a4a";
