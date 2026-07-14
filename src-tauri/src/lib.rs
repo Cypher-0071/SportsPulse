@@ -2,6 +2,7 @@ use tauri::Manager;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState};
 use tauri_plugin_positioner::{Position, WindowExt};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
 mod models;
 mod cache;
@@ -26,9 +27,31 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_positioner::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new()
+            .with_handler(|app, _shortcut, event| {
+                if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let is_visible = window.is_visible().unwrap_or(false);
+                        if is_visible {
+                            let _ = window.hide();
+                        } else {
+                            // Position window near the tray
+                            let _ = window.move_window(Position::TrayBottomRight);
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                }
+            })
+            .build())
         .manage(cache.clone())
         .invoke_handler(tauri::generate_handler![greet, get_score])
         .setup(move |app| {
+            // Register global shortcut Ctrl+Alt+Space
+            if let Ok(shortcut) = "Ctrl+Alt+Space".parse::<Shortcut>() {
+                let _ = app.global_shortcut().register(shortcut);
+            }
+
             // Spawn the background fetcher thread
             tauri::async_runtime::spawn(fetcher::start_polling(cache));
 
