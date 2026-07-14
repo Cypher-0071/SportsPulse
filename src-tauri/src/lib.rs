@@ -3,19 +3,35 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState};
 use tauri_plugin_positioner::{Position, WindowExt};
 
+mod models;
+mod cache;
+mod parser;
+mod fetcher;
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+#[tauri::command]
+fn get_score(state: tauri::State<'_, cache::ScoreCache>) -> Option<models::MatchScore> {
+    state.get()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let cache = cache::ScoreCache::new();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_positioner::init())
-        .invoke_handler(tauri::generate_handler![greet])
-        .setup(|app| {
+        .manage(cache.clone())
+        .invoke_handler(tauri::generate_handler![greet, get_score])
+        .setup(move |app| {
+            // Spawn the background fetcher thread
+            tauri::async_runtime::spawn(fetcher::start_polling(cache));
+
             // Create a Quit menu item
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&quit_i])?;
@@ -60,4 +76,5 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
 
