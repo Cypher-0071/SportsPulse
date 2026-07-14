@@ -49,8 +49,8 @@ pub fn run() {
                         if is_visible {
                             let _ = window.hide();
                         } else {
-                            // Position window near the tray
-                            let _ = window.move_window(Position::TrayBottomRight);
+                            // Position window at bottom-right of screen
+                            let _ = window.move_window(Position::BottomRight);
                             let _ = window.show();
                             let _ = window.set_focus();
                         }
@@ -100,6 +100,8 @@ pub fn run() {
                     }
                 })
                 .on_tray_icon_event(|tray, event| {
+                    tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
+
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
@@ -112,8 +114,8 @@ pub fn run() {
                             if is_visible {
                                 let _ = window.hide();
                             } else {
-                                // Position window near the tray
-                                let _ = window.move_window(Position::TrayBottomRight);
+                                // Position window at bottom-right of screen
+                                let _ = window.move_window(Position::BottomRight);
                                 let _ = window.show();
                                 let _ = window.set_focus();
                             }
