@@ -52,6 +52,12 @@ body {
 .card.event-wicket {
   animation: flashWicket 1.5s ease-out;
 }
+.card.event-goal {
+  animation: flashGoal 1.5s ease-out;
+}
+.card.event-redcard {
+  animation: flashRedcard 1.5s ease-out;
+}
 .card.event-win {
   animation: flashWin 4s ease-in-out infinite alternate;
 }
@@ -73,6 +79,14 @@ body {
 }
 @keyframes flashWicket {
   0%   { border-color: #ff4a4a; box-shadow: inset 0 0 24px rgba(255,74,74,0.2); }
+  100% { border-color: #1e1e24; box-shadow: none; }
+}
+@keyframes flashGoal {
+  0%   { border-color: #38b000; box-shadow: inset 0 0 20px rgba(56,176,0,0.25); }
+  100% { border-color: #1e1e24; box-shadow: none; }
+}
+@keyframes flashRedcard {
+  0%   { border-color: #d90429; box-shadow: inset 0 0 20px rgba(217,4,41,0.25); }
   100% { border-color: #1e1e24; box-shadow: none; }
 }
 
@@ -253,4 +267,9 @@ body {
   0%   { transform: translateY(0); }
   50%  { transform: translateY(-4px); }
   100% { transform: translateY(0); }
+}
+
+#soccer-clock-val {
+  font-variant-numeric: tabular-nums;
+  color: #e8e8ec;
 }

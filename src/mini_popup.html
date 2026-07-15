@@ -50,6 +50,8 @@
       .popup.four   .accent-strip { background: #f0b429; }
       .popup.six    .accent-strip { background: #e63946; }
       .popup.wicket .accent-strip { background: #ff4a4a; }
+      .popup.goal   .accent-strip { background: #38b000; }
+      .popup.redcard .accent-strip { background: #d90429; }
       
       /* Win celebration animated gradient accent */
       .popup.win .accent-strip {
@@ -72,6 +74,8 @@
       }
       .popup.six    .event-icon { color: #e63946; }
       .popup.wicket .event-icon { color: #ff4a4a; }
+      .popup.goal   .event-icon { color: #38b000; }
+      .popup.redcard .event-icon { color: #d90429; }
       .popup.win    .event-icon {
         animation: rainbowText 2.5s ease infinite alternate;
       }
@@ -165,6 +169,24 @@
       function getCleanEventDetail(description, eventType) {
         if (!description) return "";
 
+        // Soccer cleanup
+        if (description.includes(" Own Goal")) {
+          return description.split(" Own Goal")[0].trim();
+        }
+        if (description.includes(" Goal")) {
+          return description.split(" Goal")[0].trim();
+        }
+        if (description.includes(" Penalty")) {
+          return description.split(" Penalty")[0].trim();
+        }
+        if (description.includes(" Red Card")) {
+          return description.split(" Red Card")[0].trim();
+        }
+        if (description.includes(" Yellow Card")) {
+          return description.split(" Yellow Card")[0].trim();
+        }
+
+        // Cricket cleanup
         if (eventType === "Wicket") {
           if (description.includes(":")) {
             return description.split(":")[0].trim();
@@ -194,10 +216,18 @@
 
         const type = payload.event_type;  // "Boundary" | "Wicket" | "Win"
         const isSix = payload.title && payload.title.includes("SIX");
+        const titleStr = payload.title || "";
 
         // CSS class for color theme
         popup.className = "popup";
-        if (type === "Wicket") {
+        
+        if (titleStr.includes("GOAL")) {
+          popup.classList.add("goal");
+          iconEl.textContent = "⚽";
+        } else if (titleStr === "RED CARD!") {
+          popup.classList.add("redcard");
+          iconEl.textContent = "🟥";
+        } else if (type === "Wicket") {
           popup.classList.add("wicket");
           iconEl.textContent = "🎯";
         } else if (type === "Boundary") {
@@ -213,7 +243,7 @@
           iconEl.textContent = "🏆";
         }
 
-        headlineEl.textContent = payload.title || "Event";
+        headlineEl.textContent = titleStr || "Event";
         detailEl.textContent   = getCleanEventDetail(payload.description, type);
       }
 

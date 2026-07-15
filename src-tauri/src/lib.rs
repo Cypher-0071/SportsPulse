@@ -81,13 +81,13 @@ pub fn run() {
                         other => {
                             if other.starts_with("match_") {
                                 let parts: Vec<&str> = other.split('_').collect();
-                                if parts.len() == 3 {
-                                    let series_id = parts[1].to_string();
-                                    let match_id = parts[2].to_string();
+                                if parts.len() == 4 {
+                                    let sport_slug = parts[1].to_string();
+                                    let series_id = parts[2].to_string();
+                                    let match_id = parts[3].to_string();
                                     let match_state = app.state::<match_state::ActiveMatchesState>();
                                     if let Ok(mut sel) = match_state.selected_match.lock() {
-                                        *sel = Some((series_id, match_id));
-                                        println!("User selected match: series={}, match={}", parts[1], parts[2]);
+                                        *sel = Some((sport_slug, series_id, match_id));
                                     };
                                 }
                             }

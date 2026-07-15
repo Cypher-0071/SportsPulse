@@ -1,4 +1,4 @@
-use crate::models::{MatchScore, MatchStatus, TeamScore, MatchEvent, MatchEventType};
+use crate::models::{MatchScore, MatchStatus, TeamScore, MatchEvent, MatchEventType, SportType};
 
 pub fn parse_all_live_indian_matches(value: &serde_json::Value) -> Vec<(String, String, String)> {
     let mut matches = Vec::new();
@@ -144,6 +144,8 @@ pub fn parse_match_detail(value: &serde_json::Value, series_id: &str, match_id: 
         target,
         runs_needed,
         timestamp,
+        sport: SportType::Cricket,
+        soccer_clock: None,
     })
 }
 
@@ -298,3 +300,163 @@ pub fn parse_latest_event(value: &serde_json::Value, last_ball_id: &mut Option<S
 
     None
 }
+
+pub fn parse_soccer_matches(value: &serde_json::Value) -> Vec<(String, String, String)> {
+    let mut matches = Vec::new();
+    if let Some(sports) = value.get("sports").and_then(|v| v.as_array()) {
+        for sport in sports {
+            if sport.get("slug").and_then(|v| v.as_str()) == Some("soccer") {
+                if let Some(leagues) = sport.get("leagues").and_then(|v| v.as_array()) {
+                    for league in leagues {
+                        let series_slug = league.get("slug").and_then(|v| v.as_str()).unwrap_or("");
+                        let series_id = if series_slug.is_empty() {
+                            league.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string()
+                        } else {
+                            series_slug.to_string()
+                        };
+                        
+                        if let Some(events) = league.get("events").and_then(|v| v.as_array()) {
+                            for event in events {
+                                let match_id = event.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                                let name = event.get("name").and_then(|v| v.as_str()).unwrap_or("Football Match");
+                                let status = event.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                                
+                                if status == "in" || status == "pre" {
+                                    matches.push((series_id.clone(), match_id.to_string(), name.to_string()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    matches
+}
+
+pub fn parse_soccer_match_detail(value: &serde_json::Value, series_id: &str, match_id: &str) -> Option<MatchScore> {
+    let header = value.get("header")?;
+    let match_title = header.get("name")?.as_str()?.to_string();
+
+    let competitions = header.get("competitions")?.as_array()?;
+    let comp = competitions.get(0)?;
+
+    let status = comp.get("status")?;
+    let state = status.get("type")?.get("state")?.as_str()?;
+    let detail = status.get("type")?.get("detail")?.as_str()?.to_string();
+
+    let status_enum = match state {
+        "in" => MatchStatus::Live,
+        "pre" => MatchStatus::Scheduled,
+        "post" => MatchStatus::Completed,
+        _ => MatchStatus::NoMatch,
+    };
+
+    let competitors_arr = comp.get("competitors")?.as_array()?;
+    if competitors_arr.len() < 2 {
+        return None;
+    }
+
+    let team1 = parse_soccer_competitor(&competitors_arr[0]);
+    let team2 = parse_soccer_competitor(&competitors_arr[1]);
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    Some(MatchScore {
+        match_id: match_id.to_string(),
+        series_id: series_id.to_string(),
+        match_title,
+        status: status_enum,
+        team1,
+        team2,
+        batting_team: 0,
+        crr: 0.0,
+        rrr: None,
+        target: None,
+        runs_needed: None,
+        timestamp,
+        sport: SportType::Soccer,
+        soccer_clock: Some(detail),
+    })
+}
+
+fn parse_soccer_competitor(comp: &serde_json::Value) -> TeamScore {
+    let team = comp.get("team").unwrap();
+    let id = team.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let name = team.get("displayName").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let abbreviation = team.get("abbreviation").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    let score_val = comp.get("score");
+    let score_str = if let Some(s) = score_val.and_then(|v| v.as_str()) {
+        s.to_string()
+    } else if let Some(n) = score_val.and_then(|v| v.as_u64()) {
+        n.to_string()
+    } else {
+        "0".to_string()
+    };
+    
+    let runs = score_str.parse::<u32>().unwrap_or(0);
+    let is_winner = comp.get("winner").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    TeamScore {
+        id,
+        name,
+        abbreviation,
+        score: score_str,
+        runs,
+        wickets: 0,
+        overs: 0.0,
+        is_batting: false,
+        is_winner,
+    }
+}
+
+pub fn parse_soccer_latest_event(value: &serde_json::Value, last_event_id: &mut Option<String>) -> Option<MatchEvent> {
+    let key_events = value.get("keyEvents")?.as_array()?;
+    let latest_event = key_events.last()?;
+    
+    let event_id = latest_event.get("id")?.as_str()?;
+    
+    if last_event_id.as_ref() == Some(&event_id.to_string()) {
+        return None;
+    }
+    *last_event_id = Some(event_id.to_string());
+
+    let type_obj = latest_event.get("type")?;
+    let event_type_slug = type_obj.get("type")?.as_str()?.to_lowercase();
+
+    let short_text = latest_event.get("shortText").and_then(|v| v.as_str()).unwrap_or("");
+    let clock_val = latest_event.get("clock").and_then(|c| c.get("displayValue").and_then(|v| v.as_str())).unwrap_or("");
+
+    let mut event_type = None;
+    let mut title = String::new();
+
+    if event_type_slug.contains("goal") || latest_event.get("scoringPlay").and_then(|v| v.as_bool()).unwrap_or(false) {
+        event_type = Some(MatchEventType::Boundary);
+        title = if event_type_slug.contains("own") {
+            "OWN GOAL!".to_string()
+        } else if event_type_slug.contains("penalty") {
+            "PENALTY GOAL!".to_string()
+        } else {
+            "GOAL!".to_string()
+        };
+    } else if event_type_slug.contains("red") {
+        event_type = Some(MatchEventType::Wicket);
+        title = "RED CARD!".to_string();
+    }
+
+    if let Some(et) = event_type {
+        Some(MatchEvent {
+            event_type: et,
+            title,
+            description: format!("{} ({})", short_text, clock_val),
+            score: "".to_string(),
+        })
+    } else {
+        None
+    }
+}
+

@@ -9,8 +9,8 @@ function cleanTitle(title) {
   return clean;
 }
 
-function cleanScoreString(scoreStr) {
-  if (!scoreStr) return "Yet to bat";
+function cleanScoreString(scoreStr, sport) {
+  if (!scoreStr) return sport === "Soccer" ? "0" : "Yet to bat";
   let cleaned = scoreStr
     .replace(/,\s*target\s*\d+/i, '')
     .replace(/\s*target\s*:?\s*\d+/i, '')
@@ -46,6 +46,10 @@ const needSep        = document.getElementById("need-sep");
 const targetContainer = document.getElementById("target-container");
 const targetValEl     = document.getElementById("target-val");
 
+const soccerClockContainer = document.getElementById("soccer-clock-container");
+const soccerClockValEl     = document.getElementById("soccer-clock-val");
+const statsLeftEl          = document.querySelector(".stats-left");
+
 // ─── Scoreboard polling ───
 async function updateScoreboard() {
   try {
@@ -72,7 +76,7 @@ async function updateScoreboard() {
       liveIndicatorEl.style.color = "#ff4a4a";
       scoreboardCard.classList.remove("event-win");
     } else if (score.status === "Break") {
-      liveIndicatorEl.textContent = "BREAK";
+      liveIndicatorEl.textContent = score.sport === "Soccer" ? "HT" : "BREAK";
       liveIndicatorEl.style.color = "#ffb703";
       scoreboardCard.classList.remove("event-win");
     } else if (score.status === "Scheduled") {
@@ -92,36 +96,50 @@ async function updateScoreboard() {
     // Team 1
     const t1abbr = score.team1.abbreviation || score.team1.name || "T1";
     team1NameEl.textContent  = t1abbr;
-    team1ScoreEl.textContent = cleanScoreString(score.team1.score);
+    team1ScoreEl.textContent = cleanScoreString(score.team1.score, score.sport);
     team1BattingDot.classList.toggle("hidden", !score.team1.is_batting);
 
     // Team 2
     const t2abbr = score.team2.abbreviation || score.team2.name || "T2";
     team2NameEl.textContent  = t2abbr;
-    team2ScoreEl.textContent = cleanScoreString(score.team2.score);
+    team2ScoreEl.textContent = cleanScoreString(score.team2.score, score.sport);
     team2BattingDot.classList.toggle("hidden", !score.team2.is_batting);
 
     // Stats
-    crrValEl.textContent = score.crr.toFixed(2);
+    if (score.sport === "Soccer") {
+      if (statsLeftEl) statsLeftEl.classList.add("hidden");
+      if (targetContainer) targetContainer.classList.add("hidden");
+      if (soccerClockContainer) {
+        soccerClockContainer.classList.remove("hidden");
+        if (soccerClockValEl) {
+          soccerClockValEl.textContent = score.soccer_clock || "-";
+        }
+      }
+    } else {
+      if (statsLeftEl) statsLeftEl.classList.remove("hidden");
+      if (soccerClockContainer) soccerClockContainer.classList.add("hidden");
 
-    const hasRrr = score.rrr !== null && score.rrr !== undefined;
-    rrrContainer.classList.toggle("hidden", !hasRrr);
-    rrrSep.classList.toggle("hidden", !hasRrr);
-    if (hasRrr) rrrValEl.textContent = score.rrr.toFixed(2);
+      if (crrValEl) crrValEl.textContent = score.crr.toFixed(2);
 
-    const hasNeed = score.runs_needed !== null && score.runs_needed !== undefined;
-    needContainer.classList.toggle("hidden", !hasNeed);
-    needSep.classList.toggle("hidden", !hasNeed);
-    if (hasNeed) {
-      const chasingAbbr = score.batting_team === 1 ? score.team1.abbreviation : score.team2.abbreviation;
-      needValEl.textContent = `${chasingAbbr} need ${score.runs_needed}`;
-    }
+      const hasRrr = score.rrr !== null && score.rrr !== undefined;
+      if (rrrContainer) rrrContainer.classList.toggle("hidden", !hasRrr);
+      if (rrrSep) rrrSep.classList.toggle("hidden", !hasRrr);
+      if (hasRrr && rrrValEl) rrrValEl.textContent = score.rrr.toFixed(2);
 
-    // Target (on the right in the footer)
-    const hasTarget = score.target !== null && score.target !== undefined;
-    if (targetContainer && targetValEl) {
-      targetContainer.classList.toggle("hidden", !hasTarget);
-      if (hasTarget) targetValEl.textContent = score.target;
+      const hasNeed = score.runs_needed !== null && score.runs_needed !== undefined;
+      if (needContainer) needContainer.classList.toggle("hidden", !hasNeed);
+      if (needSep) needSep.classList.toggle("hidden", !hasNeed);
+      if (hasNeed && needValEl) {
+        const chasingAbbr = score.batting_team === 1 ? score.team1.abbreviation : score.team2.abbreviation;
+        needValEl.textContent = `${chasingAbbr} need ${score.runs_needed}`;
+      }
+
+      // Target (on the right in the footer)
+      const hasTarget = score.target !== null && score.target !== undefined;
+      if (targetContainer && targetValEl) {
+        targetContainer.classList.toggle("hidden", !hasTarget);
+        if (hasTarget) targetValEl.textContent = score.target;
+      }
     }
   } catch (err) {
     console.error("Score fetch error:", err);
@@ -131,6 +149,24 @@ async function updateScoreboard() {
 function getCleanEventDetail(description, eventType) {
   if (!description) return "";
 
+  // Soccer cleanup
+  if (description.includes(" Own Goal")) {
+    return description.split(" Own Goal")[0].trim();
+  }
+  if (description.includes(" Goal")) {
+    return description.split(" Goal")[0].trim();
+  }
+  if (description.includes(" Penalty")) {
+    return description.split(" Penalty")[0].trim();
+  }
+  if (description.includes(" Red Card")) {
+    return description.split(" Red Card")[0].trim();
+  }
+  if (description.includes(" Yellow Card")) {
+    return description.split(" Yellow Card")[0].trim();
+  }
+
+  // Cricket cleanup
   if (eventType === "Wicket") {
     if (description.includes(":")) {
       return description.split(":")[0].trim();
@@ -157,7 +193,7 @@ let eventOverlayTimeout = null;
 function flashEvent(payload) {
   if (!payload) return;
 
-  scoreboardCard.classList.remove("event-four", "event-six", "event-wicket");
+  scoreboardCard.classList.remove("event-four", "event-six", "event-wicket", "event-goal", "event-redcard");
   const existing = scoreboardCard.querySelector(".event-overlay");
   if (existing) existing.remove();
   if (eventOverlayTimeout) clearTimeout(eventOverlayTimeout);
@@ -166,11 +202,19 @@ function flashEvent(payload) {
 
   if (payload.event_type === "Boundary") {
     scoreboardCard.classList.remove("event-win");
-    const isSix = payload.title && payload.title.includes("SIX");
-    scoreboardCard.classList.add(isSix ? "event-six" : "event-four");
+    if (payload.title && payload.title.includes("GOAL")) {
+      scoreboardCard.classList.add("event-goal");
+    } else {
+      const isSix = payload.title && payload.title.includes("SIX");
+      scoreboardCard.classList.add(isSix ? "event-six" : "event-four");
+    }
   } else if (payload.event_type === "Wicket") {
     scoreboardCard.classList.remove("event-win");
-    scoreboardCard.classList.add("event-wicket");
+    if (payload.title === "RED CARD!") {
+      scoreboardCard.classList.add("event-redcard");
+    } else {
+      scoreboardCard.classList.add("event-wicket");
+    }
   } else if (payload.event_type === "Win") {
     scoreboardCard.classList.add("event-win");
   }

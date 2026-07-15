@@ -22,6 +22,12 @@ pub struct TeamScore {
     pub is_winner: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SportType {
+    Cricket,
+    Soccer,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatchScore {
     pub match_id: String,
@@ -36,6 +42,8 @@ pub struct MatchScore {
     pub target: Option<u32>,
     pub runs_needed: Option<u32>,
     pub timestamp: u64,
+    pub sport: SportType,
+    pub soccer_clock: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

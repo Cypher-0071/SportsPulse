@@ -2,8 +2,8 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
 pub struct ActiveMatchesState {
-    pub active_matches: Arc<Mutex<Vec<(String, String, String)>>>, // (series_id, match_id, match_title)
-    pub selected_match: Arc<Mutex<Option<(String, String)>>>,      // (series_id, match_id)
+    pub active_matches: Arc<Mutex<Vec<(String, String, String, String)>>>, // (sport, series_id, match_id, match_title)
+    pub selected_match: Arc<Mutex<Option<(String, String, String)>>>,      // (sport, series_id, match_id)
 }
 
 impl ActiveMatchesState {
