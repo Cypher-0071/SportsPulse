@@ -28,6 +28,28 @@ fn hide_mini_popup(app: tauri::AppHandle) {
     }
 }
 
+#[tauri::command]
+fn get_discovered_matches(state: tauri::State<'_, match_state::ActiveMatchesState>) -> Vec<(String, String, String, String, String, String)> {
+    if let Ok(active) = state.active_matches.lock() {
+        active.clone()
+    } else {
+        Vec::new()
+    }
+}
+
+#[tauri::command]
+fn select_match(sport: String, series_id: String, match_id: String, state: tauri::State<'_, match_state::ActiveMatchesState>) {
+    if let Ok(mut sel) = state.selected_match.lock() {
+        *sel = Some((sport, series_id, match_id));
+    }
+    state.notify.notify_one();
+}
+
+#[tauri::command]
+fn get_active_match(state: tauri::State<'_, match_state::ActiveMatchesState>) -> Option<(String, String, String)> {
+    state.selected_match.lock().ok().and_then(|s| s.clone())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let cache = cache::ScoreCache::new();
@@ -55,7 +77,22 @@ pub fn run() {
             .build())
         .manage(cache.clone())
         .manage(match_state.clone())
-        .invoke_handler(tauri::generate_handler![get_score, get_latest_event, hide_mini_popup])
+        .invoke_handler(tauri::generate_handler![
+            get_score,
+            get_latest_event,
+            hide_mini_popup,
+            get_discovered_matches,
+            select_match,
+            get_active_match
+        ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "dashboard" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .setup(move |app| {
             // Register global shortcut Ctrl+Alt+Space
             if let Ok(shortcut) = "Ctrl+Alt+Space".parse::<Shortcut>() {
@@ -65,9 +102,10 @@ pub fn run() {
             // Spawn the background fetcher thread
             tauri::async_runtime::spawn(fetcher::start_polling(cache, app.handle().clone(), match_state.clone()));
 
-            // Create a Quit menu item
+            // Create tray menu items
+            let dash_i = MenuItem::with_id(app, "show_dashboard", "Open Dashboard", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&quit_i])?;
+            let menu = Menu::with_items(app, &[&dash_i, &quit_i])?;
 
             // Create system tray icon with explicit ID "main"
             let _tray = TrayIconBuilder::with_id("main")
@@ -75,6 +113,12 @@ pub fn run() {
                 .menu(&menu)
                 .on_menu_event(|app, event| {
                     match event.id.as_ref() {
+                        "show_dashboard" => {
+                            if let Some(dash_win) = app.get_webview_window("dashboard") {
+                                let _ = dash_win.show();
+                                let _ = dash_win.set_focus();
+                            }
+                        }
                         "quit" => {
                             app.exit(0);
                         }
@@ -93,6 +137,7 @@ pub fn run() {
                                     if let Ok(mut sel) = match_state.selected_match.lock() {
                                         *sel = Some((sport_slug, series_id, match_id));
                                     };
+                                    match_state.notify.notify_one();
                                 } else {
                                     eprintln!("[DEBUG] Selection ignored – not enough parts ({})", parts.len());
                                 }

@@ -1,6 +1,6 @@
 use crate::models::{MatchScore, MatchStatus, TeamScore, MatchEvent, MatchEventType, SportType};
 
-pub fn parse_all_live_indian_matches(value: &serde_json::Value) -> Vec<(String, String, String)> {
+pub fn parse_all_live_indian_matches(value: &serde_json::Value) -> Vec<(String, String, String, String, String)> {
     let mut matches = Vec::new();
     if let Some(sports) = value.get("sports").and_then(|v| v.as_array()) {
         for sport in sports {
@@ -8,6 +8,7 @@ pub fn parse_all_live_indian_matches(value: &serde_json::Value) -> Vec<(String, 
                 if let Some(leagues) = sport.get("leagues").and_then(|v| v.as_array()) {
                     for league in leagues {
                         let series_id = league.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                        let league_name = league.get("name").and_then(|v| v.as_str()).unwrap_or("Cricket").to_string();
                         if let Some(events) = league.get("events").and_then(|v| v.as_array()) {
                             for event in events {
                                 let match_id = event.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -17,18 +18,23 @@ pub fn parse_all_live_indian_matches(value: &serde_json::Value) -> Vec<(String, 
                                 if status == "in" || status == "pre" {
                                     if let Some(competitors) = event.get("competitors").and_then(|v| v.as_array()) {
                                         let mut is_india_match = false;
-                                        for comp in competitors {
+                                                                      for comp in competitors {
                                             let id = comp.get("id").and_then(|v| v.as_str()).unwrap_or("");
                                             let display_name = comp.get("displayName").and_then(|v| v.as_str()).unwrap_or("");
-                                            if id == "6" || display_name.to_lowercase() == "india" {
+                                            let lower_name = display_name.to_lowercase();
+                                            if id == "6" || lower_name.contains("india") || lower_name == "ind" {
                                                 is_india_match = true;
                                                 break;
                                             }
                                         }
                                         if is_india_match {
-                                            let prefix = if status == "in" { "🔴 " } else { "⏳ " };
-                                            let match_name = format!("{}{}", prefix, name);
-                                            matches.push((series_id.to_string(), match_id.to_string(), match_name));
+                                            matches.push((
+                                                series_id.to_string(),
+                                                match_id.to_string(),
+                                                name.to_string(),
+                                                status.to_string(),
+                                                league_name.clone()
+                                            ));
                                         }
                                     }
                                 }
@@ -305,7 +311,7 @@ pub fn parse_latest_event(value: &serde_json::Value, last_ball_id: &mut Option<S
     None
 }
 
-pub fn parse_soccer_matches(value: &serde_json::Value) -> Vec<(String, String, String)> {
+pub fn parse_soccer_matches(value: &serde_json::Value) -> Vec<(String, String, String, String, String)> {
     let mut matches = Vec::new();
     if let Some(sports) = value.get("sports").and_then(|v| v.as_array()) {
         for sport in sports {
@@ -318,11 +324,15 @@ pub fn parse_soccer_matches(value: &serde_json::Value) -> Vec<(String, String, S
                         } else {
                             series_slug.to_string()
                         };
+                        let league_name = league.get("name").and_then(|v| v.as_str()).unwrap_or("Football").to_string();
                         
                         if let Some(events) = league.get("events").and_then(|v| v.as_array()) {
                             for event in events {
                                 let match_id = event.get("id").and_then(|v| v.as_str()).unwrap_or("");
                                 let name = event.get("name").and_then(|v| v.as_str()).unwrap_or("Football Match");
+                                
+                                // The scoreboard header has "status" inside event.status
+                                // Wait, let's look at event.get("status")
                                 let status = event.get("status").and_then(|v| v.as_str()).unwrap_or("");
                                 
                                 if status == "in" || status == "pre" {
@@ -334,8 +344,13 @@ pub fn parse_soccer_matches(value: &serde_json::Value) -> Vec<(String, String, S
                                             match_name = format!("{} vs {}", team1, team2);
                                         }
                                     }
-                                    let prefix = if status == "in" { "🔴 " } else { "⏳ " };
-                                    matches.push((series_id.clone(), match_id.to_string(), format!("{}{}", prefix, match_name)));
+                                    matches.push((
+                                        series_id.clone(),
+                                        match_id.to_string(),
+                                        match_name,
+                                        status.to_string(),
+                                        league_name.clone()
+                                    ));
                                 }
                             }
                         }

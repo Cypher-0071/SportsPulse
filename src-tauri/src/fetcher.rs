@@ -31,36 +31,52 @@ pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle, matc
         let mut sleep_duration = Duration::from_secs(300);
         let mut discovered_matches = Vec::new();
 
-        // 1. Fetch Cricket Scoreboard
-        match client.get("https://site.web.api.espn.com/apis/personalized/v2/scoreboard/header?sport=cricket&region=in")
-            .send()
-            .await
-        {
-            Ok(resp) => {
-                if let Ok(json) = resp.json::<serde_json::Value>().await {
-                    let cricket_matches = parse_all_live_indian_matches(&json);
-                    for (series_id, match_id, title) in cricket_matches {
-                        discovered_matches.push(("cricket".to_string(), series_id, match_id, title));
-                    }
-                }
+        let today_str = chrono::Local::now().format("%Y%m%d").to_string();
+        
+        // 1. Fetch Cricket Scoreboards
+        let mut cricket_matches = Vec::new();
+        // Default (Live / Recent)
+        if let Ok(resp) = client.get("https://site.web.api.espn.com/apis/personalized/v2/scoreboard/header?sport=cricket&region=in").send().await {
+            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                cricket_matches.extend(parse_all_live_indian_matches(&json));
             }
-            Err(e) => eprintln!("Error fetching cricket scoreboard: {}", e),
+        }
+        // Today's Scheduled
+        let cricket_today_url = format!("https://site.web.api.espn.com/apis/personalized/v2/scoreboard/header?sport=cricket&region=in&dates={}", today_str);
+        if let Ok(resp) = client.get(&cricket_today_url).send().await {
+            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                cricket_matches.extend(parse_all_live_indian_matches(&json));
+            }
+        }
+        
+        cricket_matches.sort_by_key(|m| m.1.clone());
+        cricket_matches.dedup_by_key(|m| m.1.clone());
+        
+        for (series_id, match_id, title, status, league_name) in cricket_matches {
+            discovered_matches.push(("cricket".to_string(), series_id, match_id, title, status, league_name));
         }
 
-        // 2. Fetch Soccer Scoreboard
-        match client.get("https://site.web.api.espn.com/apis/personalized/v2/scoreboard/header?sport=soccer&region=in")
-            .send()
-            .await
-        {
-            Ok(resp) => {
-                if let Ok(json) = resp.json::<serde_json::Value>().await {
-                    let soccer_matches = parse_soccer_matches(&json);
-                    for (series_id, match_id, title) in soccer_matches {
-                        discovered_matches.push(("soccer".to_string(), series_id, match_id, title));
-                    }
-                }
+        // 2. Fetch Soccer Scoreboards
+        let mut soccer_matches = Vec::new();
+        // Default (Live / Recent)
+        if let Ok(resp) = client.get("https://site.web.api.espn.com/apis/personalized/v2/scoreboard/header?sport=soccer&region=in").send().await {
+            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                soccer_matches.extend(parse_soccer_matches(&json));
             }
-            Err(e) => eprintln!("Error fetching soccer scoreboard: {}", e),
+        }
+        // Today's Scheduled
+        let soccer_today_url = format!("https://site.web.api.espn.com/apis/personalized/v2/scoreboard/header?sport=soccer&region=in&dates={}", today_str);
+        if let Ok(resp) = client.get(&soccer_today_url).send().await {
+            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                soccer_matches.extend(parse_soccer_matches(&json));
+            }
+        }
+
+        soccer_matches.sort_by_key(|m| m.1.clone());
+        soccer_matches.dedup_by_key(|m| m.1.clone());
+
+        for (series_id, match_id, title, status, league_name) in soccer_matches {
+            discovered_matches.push(("soccer".to_string(), series_id, match_id, title, status, league_name));
         }
 
         // Update active matches list & rebuild tray if changed
@@ -80,7 +96,7 @@ pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle, matc
         // Determine which match to track
         let selected = match_state.selected_match.lock().ok().and_then(|s| s.clone());
         let match_to_track = selected.or_else(|| {
-            discovered_matches.first().map(|(sport, s, m, _)| (sport.clone(), s.clone(), m.clone()))
+            discovered_matches.first().map(|(sport, s, m, _, _, _)| (sport.clone(), s.clone(), m.clone()))
         });
 
         if let Some((sport, series_id, match_id)) = match_to_track {
@@ -108,10 +124,13 @@ pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle, matc
                             if let Some(main_win) = app_handle.get_webview_window("main") {
                                 let size = if score.sport == crate::models::SportType::Soccer {
                                     tauri::LogicalSize::new(260.0, 40.0)
+                                } else if score.status == MatchStatus::Scheduled || score.status == MatchStatus::Completed {
+                                    tauri::LogicalSize::new(340.0, 90.0)
                                 } else {
-                                    tauri::LogicalSize::new(340.0, 140.0)
+                                    tauri::LogicalSize::new(340.0, 110.0)
                                 };
                                 let _ = main_win.set_size(tauri::Size::Logical(size));
+                                let _ = main_win.move_window(Position::BottomRight);
                             }
 
                             // Detect match change initialization for completed status
@@ -224,16 +243,27 @@ pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle, matc
             cache.set(None);
             sleep_duration = Duration::from_secs(30); // Re-check scoreboard every 30s for new live matches
             if let Some(main_win) = app_handle.get_webview_window("main") {
-                let _ = main_win.set_size(tauri::Size::Logical(tauri::LogicalSize::new(340.0, 140.0)));
+                let _ = main_win.set_size(tauri::Size::Logical(tauri::LogicalSize::new(340.0, 110.0)));
+                let _ = main_win.move_window(Position::BottomRight);
             }
         }
 
-        tokio::time::sleep(sleep_duration).await;
+        tokio::select! {
+            _ = tokio::time::sleep(sleep_duration) => {},
+            _ = match_state.notify.notified() => {
+                eprintln!("[DEBUG] Fetcher waken up by match selection change!");
+            }
+        }
     }
 }
 
-fn rebuild_tray_menu(app_handle: &tauri::AppHandle, matches: &[(String, String, String, String)]) {
+fn rebuild_tray_menu(app_handle: &tauri::AppHandle, matches: &[(String, String, String, String, String, String)]) {
     use tauri::menu::{Menu, MenuItem, Submenu};
+
+    let dash_i = match MenuItem::with_id(app_handle, "show_dashboard", "Open Dashboard", true, None::<&str>) {
+        Ok(item) => item,
+        Err(_) => return,
+    };
 
     let quit_i = match MenuItem::with_id(app_handle, "quit", "Quit", true, None::<&str>) {
         Ok(item) => item,
@@ -244,15 +274,19 @@ fn rebuild_tray_menu(app_handle: &tauri::AppHandle, matches: &[(String, String, 
         Ok(m) => m,
         Err(_) => return,
     };
+    let _ = menu.append(&dash_i);
     let _ = menu.append(&quit_i);
 
     if !matches.is_empty() {
         if let Ok(submenu) = Submenu::new(app_handle, "Select Match", true) {
-            for (sport, series_id, match_id, title) in matches {
+            for (sport, series_id, match_id, title, status, _) in matches {
+                let prefix = if status == "in" { "🔴 " } else { "⏳ " };
+                let display_title = format!("{}{}", prefix, title);
+
                 if let Ok(item) = MenuItem::with_id(
                     app_handle,
                     format!("match_{}_{}_{}", sport, series_id, match_id),
-                    title,
+                    display_title,
                     true,
                     None::<&str>,
                 ) {

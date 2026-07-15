@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SportsPulse Dashboard</title>
+    <link rel="stylesheet" href="styles.css" />
+    <style>
+      /* Dashboard specific overrides and styling */
+      body {
+        background: #0b0b0e;
+        color: #e8e8ec;
+        font-family: 'Inter', -apple-system, sans-serif;
+        margin: 0;
+        padding: 0;
+        overflow-y: auto;
+      }
+      .db-container {
+        max-width: 600px;
+        margin: 0 auto;
+        padding: 20px 16px;
+      }
+      .db-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 24px;
+        border-bottom: 1px solid #1e1e24;
+        padding-bottom: 14px;
+      }
+      .db-logo {
+        font-size: 16px;
+        font-weight: 800;
+        color: #ffffff;
+        letter-spacing: 0.5px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .db-logo span {
+        font-size: 18px;
+      }
+      .db-tabs {
+        display: flex;
+        gap: 8px;
+        background: #141419;
+        padding: 4px;
+        border-radius: 6px;
+        border: 1px solid #1e1e24;
+      }
+      .db-tab {
+        background: transparent;
+        border: none;
+        color: #8b8fa0;
+        padding: 6px 12px;
+        font-size: 11px;
+        font-weight: 700;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .db-tab.active {
+        background: #22222a;
+        color: #ffffff;
+      }
+      .section-title {
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
+        color: #6b6f7b;
+        margin: 20px 0 10px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .grid {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .match-card {
+        background: #141419;
+        border: 1px solid #1e1e24;
+        border-radius: 8px;
+        padding: 12px 16px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        transition: all 0.2s ease;
+      }
+      .match-card:hover {
+        border-color: #2e2e38;
+        transform: translateY(-1px);
+        background: #181820;
+      }
+      .match-info {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        min-width: 0;
+      }
+      .match-title {
+        font-size: 13px;
+        font-weight: 700;
+        color: #ffffff;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .match-series {
+        font-size: 10px;
+        font-weight: 500;
+        color: #6b6f7b;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+      }
+      .match-status {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .status-live {
+        color: #ff4a4a;
+      }
+      .status-upcoming {
+        color: #5a9bd5;
+      }
+      .track-btn {
+        background: #22222a;
+        color: #ffffff;
+        border: 1px solid #2e2e38;
+        padding: 6px 12px;
+        font-size: 10px;
+        font-weight: 700;
+        border-radius: 5px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .track-btn:hover {
+        background: #2e2e38;
+        border-color: #5a5e6b;
+      }
+      .tracked-badge {
+        background: rgba(116, 198, 157, 0.1);
+        color: #74c69d;
+        border: 1px solid rgba(116, 198, 157, 0.2);
+        padding: 5px 10px;
+        font-size: 9px;
+        font-weight: 800;
+        border-radius: 5px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        box-shadow: 0 0 8px rgba(116, 198, 157, 0.05);
+      }
+      .empty-state {
+        text-align: center;
+        padding: 30px;
+        background: #141419;
+        border: 1px dotted #1e1e24;
+        border-radius: 8px;
+        color: #6b6f7b;
+        font-size: 12px;
+        font-weight: 500;
+      }
+      /* Custom scrollbars */
+      ::-webkit-scrollbar {
+        width: 6px;
+      }
+      ::-webkit-scrollbar-track {
+        background: #0b0b0e;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #22222a;
+        border-radius: 3px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="db-container">
+      <header class="db-header">
+        <div class="db-logo">
+          <span>🏏 ⚽</span> SportsPulse Dashboard
+        </div>
+        <div class="db-tabs">
+          <button id="tab-cricket" class="db-tab active">Cricket</button>
+          <button id="tab-football" class="db-tab">Football</button>
+        </div>
+      </header>
+
+      <!-- Live Section -->
+      <h2 class="section-title">🔴 Live Matches</h2>
+      <div id="live-list" class="grid">
+        <div class="empty-state">No live matches currently</div>
+      </div>
+
+      <!-- Upcoming Section -->
+      <h2 class="section-title">⏳ Upcoming Matches</h2>
+      <div id="upcoming-list" class="grid">
+        <div class="empty-state">No upcoming matches currently</div>
+      </div>
+    </div>
+    <script type="module" src="/dashboard.js" defer></script>
+  </body>
+</html>

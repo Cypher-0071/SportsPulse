@@ -138,10 +138,12 @@ async function updateScoreboard() {
     }
 
     // Footer stats
-    if (isFootball) {
-      if (statsLeftEl) statsLeftEl.classList.add("hidden");
-      if (targetContainer) targetContainer.classList.add("hidden");
+    // Footer stats
+    const statsRow = document.getElementById("stats-row");
+    if (isFootball || score.status === "Scheduled" || score.status === "Completed") {
+      if (statsRow) statsRow.classList.add("hidden");
     } else {
+      if (statsRow) statsRow.classList.remove("hidden");
       if (statsLeftEl) statsLeftEl.classList.remove("hidden");
 
       if (crrValEl) crrValEl.textContent = score.crr.toFixed(2);

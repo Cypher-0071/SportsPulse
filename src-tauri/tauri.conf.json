@@ -35,6 +35,20 @@
         "skipTaskbar": true,
         "visible": false,
         "url": "mini_popup.html"
+      },
+      {
+        "label": "dashboard",
+        "title": "SportsPulse Dashboard",
+        "width": 650,
+        "height": 450,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": true,
+        "transparent": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "visible": true,
+        "url": "dashboard.html"
       }
     ],
     "security": {
