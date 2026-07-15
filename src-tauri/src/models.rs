@@ -59,4 +59,5 @@ pub struct MatchEvent {
     pub title: String,
     pub description: String,
     pub score: String,
+    pub sport: String,
 }

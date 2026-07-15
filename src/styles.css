@@ -273,3 +273,53 @@ body {
   font-variant-numeric: tabular-nums;
   color: #e8e8ec;
 }
+
+/* ─── Soccer Board Layout (TV Broadcast Style) ─── */
+.soccer-layout .scores {
+  flex-direction: row;
+  justify-content: center;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 0;
+  background: #141419;
+  border-radius: 6px;
+  margin: 6px 0;
+  border: 1px solid #1e1e24;
+}
+
+.soccer-layout .team-row {
+  justify-content: center;
+  gap: 8px;
+  padding: 0;
+}
+
+.soccer-layout #team1-row::after {
+  content: ":";
+  color: #6b6f7b;
+  font-weight: 700;
+  font-size: 14px;
+  margin-left: 12px;
+}
+
+.soccer-layout .team-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: #8b8fa0;
+  letter-spacing: 0.5px;
+}
+
+.soccer-layout .team-score {
+  font-size: 15px;
+  font-weight: 800;
+  color: #ffffff;
+  background: #22222a;
+  padding: 2px 7px;
+  border-radius: 4px;
+  min-width: 14px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.soccer-layout #team2-row {
+  flex-direction: row-reverse;
+}

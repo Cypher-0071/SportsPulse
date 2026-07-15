@@ -65,6 +65,13 @@ async function updateScoreboard() {
 
     matchTitleEl.textContent = cleanTitle(score.match_title);
 
+    // Toggle soccer-layout styling
+    if (score.sport === "Soccer") {
+      scoreboardCard.classList.add("soccer-layout");
+    } else {
+      scoreboardCard.classList.remove("soccer-layout");
+    }
+
     // Status indicator
     const isStale = (Math.floor(Date.now() / 1000) - score.timestamp) > 15;
     if (isStale || !navigator.onLine) {
@@ -72,7 +79,7 @@ async function updateScoreboard() {
       liveIndicatorEl.style.color = "#ffb703";
       scoreboardCard.classList.remove("event-win");
     } else if (score.status === "Live") {
-      liveIndicatorEl.textContent = "LIVE";
+      liveIndicatorEl.textContent = score.sport === "Soccer" ? `LIVE · ${score.soccer_clock || ""}` : "LIVE";
       liveIndicatorEl.style.color = "#ff4a4a";
       scoreboardCard.classList.remove("event-win");
     } else if (score.status === "Break") {

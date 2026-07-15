@@ -141,6 +141,33 @@
         66%  { color: #00f0ff; }
         100% { color: #ffea00; }
       }
+
+      /* ─── Soccer Broadcast Overlay Notification Theme ─── */
+      .popup.soccer-theme {
+        background: #09090b;
+        border: 1px solid #22222a;
+      }
+      .popup.soccer-theme .event-icon {
+        font-size: 26px;
+        filter: drop-shadow(0 0 5px rgba(56,176,0,0.3));
+      }
+      .popup.soccer-theme.redcard .event-icon {
+        filter: drop-shadow(0 0 5px rgba(217,4,41,0.3));
+      }
+      .popup.soccer-theme .event-headline {
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
+        font-size: 11px;
+        color: #38b000;
+      }
+      .popup.soccer-theme.redcard .event-headline {
+        color: #d90429;
+      }
+      .popup.soccer-theme .event-detail {
+        font-size: 13px;
+        font-weight: 700;
+        color: #ffffff;
+      }
     </style>
   </head>
   <body>
@@ -221,6 +248,10 @@
         // CSS class for color theme
         popup.className = "popup";
         
+        if (payload.sport === "soccer") {
+          popup.classList.add("soccer-theme");
+        }
+
         if (titleStr.includes("GOAL")) {
           popup.classList.add("goal");
           iconEl.textContent = "⚽";

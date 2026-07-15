@@ -132,6 +132,7 @@ pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle, matc
                                         title: "MATCH WON!".to_string(),
                                         description: format!("{} won the match!", w_name),
                                         score: format!("{} vs {}", score.team1.abbreviation, score.team2.abbreviation),
+                                        sport: sport.clone(),
                                     };
                                     cache.set_latest_event(Some(win_event.clone()));
                                     let _ = app_handle.emit("match-event", &win_event);
@@ -189,9 +190,9 @@ pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle, matc
                             sleep_duration = match score.status {
                                 MatchStatus::Live => {
                                     if sport == "soccer" {
-                                        Duration::from_secs(10)
+                                        Duration::from_secs(3)
                                     } else {
-                                        Duration::from_secs(1)
+                                        Duration::from_secs(2)
                                     }
                                 }
                                 MatchStatus::Break => Duration::from_secs(30),

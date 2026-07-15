@@ -283,6 +283,7 @@ pub fn parse_latest_event(value: &serde_json::Value, last_ball_id: &mut Option<S
             title: "Wicket!".to_string(),
             description: format!("{}: {} ({})", batsman_name, dismissal_text, short_desc),
             score: score_str,
+            sport: "cricket".to_string(),
         });
     }
 
@@ -295,6 +296,7 @@ pub fn parse_latest_event(value: &serde_json::Value, last_ball_id: &mut Option<S
             title: if score_value == 6 { "SIX!" } else { "FOUR!" }.to_string(),
             description: short_desc.to_string(),
             score: score_str,
+            sport: "cricket".to_string(),
         });
     }
 
@@ -454,6 +456,7 @@ pub fn parse_soccer_latest_event(value: &serde_json::Value, last_event_id: &mut 
             title,
             description: format!("{} ({})", short_text, clock_val),
             score: "".to_string(),
+            sport: "soccer".to_string(),
         })
     } else {
         None
