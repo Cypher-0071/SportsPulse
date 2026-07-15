@@ -46,8 +46,21 @@ fn select_match(sport: String, series_id: String, match_id: String, state: tauri
 }
 
 #[tauri::command]
+fn untrack_match(state: tauri::State<'_, match_state::ActiveMatchesState>) {
+    if let Ok(mut sel) = state.selected_match.lock() {
+        *sel = None;
+    }
+    state.notify.notify_one();
+}
+
+#[tauri::command]
 fn get_active_match(state: tauri::State<'_, match_state::ActiveMatchesState>) -> Option<(String, String, String)> {
     state.selected_match.lock().ok().and_then(|s| s.clone())
+}
+
+#[tauri::command]
+fn is_initial_fetch_completed(state: tauri::State<'_, match_state::ActiveMatchesState>) -> bool {
+    state.initial_fetch_completed.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -83,7 +96,9 @@ pub fn run() {
             hide_mini_popup,
             get_discovered_matches,
             select_match,
-            get_active_match
+            get_active_match,
+            untrack_match,
+            is_initial_fetch_completed
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -122,27 +137,7 @@ pub fn run() {
                         "quit" => {
                             app.exit(0);
                         }
-                        other => {
-                            if other.starts_with("match_") {
-                                let payload = &other[6..]; // Strip "match_" prefix
-                                let parts: Vec<&str> = payload.split('_').collect();
-                                eprintln!("[DEBUG] Menu selected raw ID: '{}' | parts: {:?}", other, parts);
-                                if parts.len() >= 3 {
-                                    let sport_slug = parts[0].to_string();
-                                    let match_id = parts[parts.len() - 1].to_string();
-                                    let series_id = parts[1..parts.len() - 1].join("_");
-                                    eprintln!("[DEBUG] Parsed → sport='{}' series='{}' match='{}'", sport_slug, series_id, match_id);
-                                    
-                                    let match_state = app.state::<match_state::ActiveMatchesState>();
-                                    if let Ok(mut sel) = match_state.selected_match.lock() {
-                                        *sel = Some((sport_slug, series_id, match_id));
-                                    };
-                                    match_state.notify.notify_one();
-                                } else {
-                                    eprintln!("[DEBUG] Selection ignored – not enough parts ({})", parts.len());
-                                }
-                            }
-                        }
+                        _ => {}
                     }
                 })
                 .on_tray_icon_event(|tray, event| {

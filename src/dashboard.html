@@ -8,7 +8,7 @@
     <style>
       /* Dashboard specific overrides and styling */
       body {
-        background: #0b0b0e;
+        background: #121212;
         color: #e8e8ec;
         font-family: 'Inter', -apple-system, sans-serif;
         margin: 0;
@@ -16,7 +16,8 @@
         overflow-y: auto;
       }
       .db-container {
-        max-width: 600px;
+        max-width: 1200px;
+        width: 90%;
         margin: 0 auto;
         padding: 20px 16px;
       }
@@ -43,10 +44,10 @@
       .db-tabs {
         display: flex;
         gap: 8px;
-        background: #141419;
+        background: #1c1c1c;
         padding: 4px;
         border-radius: 6px;
-        border: 1px solid #1e1e24;
+        border: 1px solid #2d2d2d;
       }
       .db-tab {
         background: transparent;
@@ -62,7 +63,7 @@
         letter-spacing: 0.5px;
       }
       .db-tab.active {
-        background: #22222a;
+        background: #2d2d2d;
         color: #ffffff;
       }
       .section-title {
@@ -77,13 +78,32 @@
         gap: 6px;
       }
       .grid {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        gap: 12px;
+      }
+      .league-group {
+        margin-bottom: 20px;
+      }
+      .league-group-title {
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: #8b8fa0;
+        margin-bottom: 8px;
+        padding-left: 8px;
+        border-left: 2px solid #5a9bd5;
+        padding-top: 1px;
+        padding-bottom: 1px;
+        line-height: 1.2;
+      }
+      .league-group-title.live-border {
+        border-left-color: #ff4a4a;
       }
       .match-card {
-        background: #141419;
-        border: 1px solid #1e1e24;
+        background: #1c1c1c;
+        border: 1px solid #2d2d2d;
         border-radius: 8px;
         padding: 12px 16px;
         display: flex;
@@ -92,9 +112,9 @@
         transition: all 0.2s ease;
       }
       .match-card:hover {
-        border-color: #2e2e38;
+        border-color: #3d3d3d;
         transform: translateY(-1px);
-        background: #181820;
+        background: #222222;
       }
       .match-info {
         display: flex;
@@ -133,9 +153,9 @@
         color: #5a9bd5;
       }
       .track-btn {
-        background: #22222a;
+        background: #242424;
         color: #ffffff;
-        border: 1px solid #2e2e38;
+        border: 1px solid #2d2d2d;
         padding: 6px 12px;
         font-size: 10px;
         font-weight: 700;
@@ -146,8 +166,8 @@
         letter-spacing: 0.5px;
       }
       .track-btn:hover {
-        background: #2e2e38;
-        border-color: #5a5e6b;
+        background: #2d2d2d;
+        border-color: #3d3d3d;
       }
       .tracked-badge {
         background: rgba(116, 198, 157, 0.1);
@@ -161,25 +181,63 @@
         letter-spacing: 0.5px;
         box-shadow: 0 0 8px rgba(116, 198, 157, 0.05);
       }
+      .tracked-badge.clickable-badge {
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
+      .tracked-badge.clickable-badge:hover {
+        background: rgba(255, 74, 74, 0.15);
+        color: #ff4a4a;
+        border-color: rgba(255, 74, 74, 0.3);
+      }
       .empty-state {
         text-align: center;
         padding: 30px;
-        background: #141419;
-        border: 1px dotted #1e1e24;
+        background: #1c1c1c;
+        border: 1px solid #2d2d2d;
         border-radius: 8px;
         color: #6b6f7b;
         font-size: 12px;
         font-weight: 500;
+      }
+      /* Loading Screen styles */
+      .loading-overlay {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 80px 20px;
+        color: #8b8fa0;
+      }
+      .spinner {
+        width: 28px;
+        height: 28px;
+        border: 3px solid rgba(255, 255, 255, 0.1);
+        border-radius: 50%;
+        border-top-color: #5a9bd5;
+        animation: spin 0.8s linear infinite;
+        margin-bottom: 12px;
+      }
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+      .loading-text {
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
+        margin: 0;
+        color: #6b6f7b;
       }
       /* Custom scrollbars */
       ::-webkit-scrollbar {
         width: 6px;
       }
       ::-webkit-scrollbar-track {
-        background: #0b0b0e;
+        background: #121212;
       }
       ::-webkit-scrollbar-thumb {
-        background: #22222a;
+        background: #2d2d2d;
         border-radius: 3px;
       }
     </style>
@@ -196,15 +254,21 @@
         </div>
       </header>
 
+      <!-- Initial Loading Screen -->
+      <div id="loading-overlay" class="loading-overlay">
+        <div class="spinner"></div>
+        <p class="loading-text">Fetching matches...</p>
+      </div>
+
       <!-- Live Section -->
-      <h2 class="section-title">🔴 Live Matches</h2>
-      <div id="live-list" class="grid">
+      <h2 class="section-title hidden">🔴 Live Matches</h2>
+      <div id="live-list" class="hidden">
         <div class="empty-state">No live matches currently</div>
       </div>
 
       <!-- Upcoming Section -->
-      <h2 class="section-title">⏳ Upcoming Matches</h2>
-      <div id="upcoming-list" class="grid">
+      <h2 class="section-title hidden">⏳ Upcoming Matches</h2>
+      <div id="upcoming-list" class="hidden">
         <div class="empty-state">No upcoming matches currently</div>
       </div>
     </div>

@@ -79,25 +79,16 @@ pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle, matc
             discovered_matches.push(("soccer".to_string(), series_id, match_id, title, status, league_name));
         }
 
-        // Update active matches list & rebuild tray if changed
-        let mut matches_changed = false;
-        {
-            if let Ok(mut active_m) = match_state.active_matches.lock() {
-                if *active_m != discovered_matches {
-                    *active_m = discovered_matches.clone();
-                    matches_changed = true;
-                }
+        // Update active matches list
+        if let Ok(mut active_m) = match_state.active_matches.lock() {
+            if *active_m != discovered_matches {
+                *active_m = discovered_matches.clone();
             }
-        }
-        if matches_changed {
-            rebuild_tray_menu(&app_handle, &discovered_matches);
         }
 
         // Determine which match to track
-        let selected = match_state.selected_match.lock().ok().and_then(|s| s.clone());
-        let match_to_track = selected.or_else(|| {
-            discovered_matches.first().map(|(sport, s, m, _, _, _)| (sport.clone(), s.clone(), m.clone()))
-        });
+        // Determine which match to track
+        let match_to_track = match_state.selected_match.lock().ok().and_then(|s| s.clone());
 
         if let Some((sport, series_id, match_id)) = match_to_track {
             let detail_url = format!(
@@ -224,7 +215,13 @@ pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle, matc
                                     if sport == "soccer" {
                                         Duration::from_secs(3)
                                     } else {
-                                        Duration::from_secs(2)
+                                        // Set 10s polling rate for Test cricket (slower pace), 2s for T20/ODIs
+                                        let is_test = score.match_title.to_lowercase().contains("test");
+                                        if is_test {
+                                            Duration::from_secs(10)
+                                        } else {
+                                            Duration::from_secs(2)
+                                        }
                                     }
                                 }
                                 MatchStatus::Break => Duration::from_secs(30),
@@ -248,6 +245,8 @@ pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle, matc
             }
         }
 
+        match_state.initial_fetch_completed.store(true, std::sync::atomic::Ordering::Relaxed);
+
         tokio::select! {
             _ = tokio::time::sleep(sleep_duration) => {},
             _ = match_state.notify.notified() => {
@@ -257,47 +256,4 @@ pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle, matc
     }
 }
 
-fn rebuild_tray_menu(app_handle: &tauri::AppHandle, matches: &[(String, String, String, String, String, String)]) {
-    use tauri::menu::{Menu, MenuItem, Submenu};
 
-    let dash_i = match MenuItem::with_id(app_handle, "show_dashboard", "Open Dashboard", true, None::<&str>) {
-        Ok(item) => item,
-        Err(_) => return,
-    };
-
-    let quit_i = match MenuItem::with_id(app_handle, "quit", "Quit", true, None::<&str>) {
-        Ok(item) => item,
-        Err(_) => return,
-    };
-
-    let menu = match Menu::new(app_handle) {
-        Ok(m) => m,
-        Err(_) => return,
-    };
-    let _ = menu.append(&dash_i);
-    let _ = menu.append(&quit_i);
-
-    if !matches.is_empty() {
-        if let Ok(submenu) = Submenu::new(app_handle, "Select Match", true) {
-            for (sport, series_id, match_id, title, status, _) in matches {
-                let prefix = if status == "in" { "🔴 " } else { "⏳ " };
-                let display_title = format!("{}{}", prefix, title);
-
-                if let Ok(item) = MenuItem::with_id(
-                    app_handle,
-                    format!("match_{}_{}_{}", sport, series_id, match_id),
-                    display_title,
-                    true,
-                    None::<&str>,
-                ) {
-                    let _ = submenu.append(&item);
-                }
-            }
-            let _ = menu.append(&submenu);
-        }
-    }
-
-    if let Some(tray) = app_handle.tray_by_id("main") {
-        let _ = tray.set_menu(Some(menu));
-    }
-}
