@@ -324,7 +324,15 @@ pub fn parse_soccer_matches(value: &serde_json::Value) -> Vec<(String, String, S
                                 let status = event.get("status").and_then(|v| v.as_str()).unwrap_or("");
                                 
                                 if status == "in" || status == "pre" {
-                                    matches.push((series_id.clone(), match_id.to_string(), name.to_string()));
+                                    let mut match_name = name.to_string();
+                                    if let Some(competitors) = event.get("competitors").and_then(|v| v.as_array()) {
+                                        if competitors.len() >= 2 {
+                                            let team1 = competitors[0].get("displayName").and_then(|v| v.as_str()).unwrap_or("T1");
+                                            let team2 = competitors[1].get("displayName").and_then(|v| v.as_str()).unwrap_or("T2");
+                                            match_name = format!("{} vs {}", team1, team2);
+                                        }
+                                    }
+                                    matches.push((series_id.clone(), match_id.to_string(), match_name));
                                 }
                             }
                         }
