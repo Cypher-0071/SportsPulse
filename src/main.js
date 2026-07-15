@@ -46,9 +46,17 @@ const needSep        = document.getElementById("need-sep");
 const targetContainer = document.getElementById("target-container");
 const targetValEl     = document.getElementById("target-val");
 
-const soccerClockContainer = document.getElementById("soccer-clock-container");
-const soccerClockValEl     = document.getElementById("soccer-clock-val");
-const statsLeftEl          = document.querySelector(".stats-left");
+const statsLeftEl     = document.getElementById("stats-left-el");
+
+// Football broadcast section refs
+const cricketScores   = document.getElementById("cricket-scores");
+const footballScores  = document.getElementById("football-scores");
+const fbTeam1Name     = document.getElementById("fb-team1-name");
+const fbTeam2Name     = document.getElementById("fb-team2-name");
+const fbTeam1Score    = document.getElementById("fb-team1-score");
+const fbTeam2Score    = document.getElementById("fb-team2-score");
+const fbClock         = document.getElementById("fb-clock");
+const fbSub           = document.getElementById("fb-sub");
 
 // ─── Scoreboard polling ───
 async function updateScoreboard() {
@@ -63,12 +71,20 @@ async function updateScoreboard() {
     noMatchCard.classList.add("hidden");
     scoreboardCard.classList.remove("hidden");
 
-    matchTitleEl.textContent = cleanTitle(score.match_title);
+    const rawTitle = cleanTitle(score.match_title);
+    matchTitleEl.textContent = (score.sport === "Soccer" && rawTitle === "Soccer Match")
+      ? "FOOTBALL"
+      : rawTitle;
 
-    // Toggle soccer-layout styling
-    if (score.sport === "Soccer") {
+    // Toggle football vs cricket layout
+    const isFootball = score.sport === "Soccer";
+    if (isFootball) {
+      cricketScores.classList.add("hidden");
+      footballScores.classList.remove("hidden");
       scoreboardCard.classList.add("soccer-layout");
     } else {
+      cricketScores.classList.remove("hidden");
+      footballScores.classList.add("hidden");
       scoreboardCard.classList.remove("soccer-layout");
     }
 
@@ -79,11 +95,11 @@ async function updateScoreboard() {
       liveIndicatorEl.style.color = "#ffb703";
       scoreboardCard.classList.remove("event-win");
     } else if (score.status === "Live") {
-      liveIndicatorEl.textContent = score.sport === "Soccer" ? `LIVE · ${score.soccer_clock || ""}` : "LIVE";
+      liveIndicatorEl.textContent = isFootball ? `LIVE · ${score.soccer_clock || ""}` : "LIVE";
       liveIndicatorEl.style.color = "#ff4a4a";
       scoreboardCard.classList.remove("event-win");
     } else if (score.status === "Break") {
-      liveIndicatorEl.textContent = score.sport === "Soccer" ? "HT" : "BREAK";
+      liveIndicatorEl.textContent = isFootball ? "HT" : "BREAK";
       liveIndicatorEl.style.color = "#ffb703";
       scoreboardCard.classList.remove("event-win");
     } else if (score.status === "Scheduled") {
@@ -100,31 +116,33 @@ async function updateScoreboard() {
       scoreboardCard.classList.remove("event-win");
     }
 
-    // Team 1
-    const t1abbr = score.team1.abbreviation || score.team1.name || "T1";
-    team1NameEl.textContent  = t1abbr;
-    team1ScoreEl.textContent = cleanScoreString(score.team1.score, score.sport);
-    team1BattingDot.classList.toggle("hidden", !score.team1.is_batting);
+    // Football broadcast section
+    if (isFootball) {
+      fbTeam1Name.textContent  = (score.team1.name || score.team1.abbreviation || "T1").substring(0, 3).toUpperCase();
+      fbTeam2Name.textContent  = (score.team2.name || score.team2.abbreviation || "T2").substring(0, 3).toUpperCase();
+      fbTeam1Score.textContent = score.team1.score || "0";
+      fbTeam2Score.textContent = score.team2.score || "0";
+      fbClock.textContent      = score.soccer_clock || "-";
+      fbSub.textContent        = "";
+    } else {
+      // Cricket rows
+      const t1abbr = score.team1.abbreviation || score.team1.name || "T1";
+      team1NameEl.textContent  = t1abbr;
+      team1ScoreEl.textContent = cleanScoreString(score.team1.score, score.sport);
+      team1BattingDot.classList.toggle("hidden", !score.team1.is_batting);
 
-    // Team 2
-    const t2abbr = score.team2.abbreviation || score.team2.name || "T2";
-    team2NameEl.textContent  = t2abbr;
-    team2ScoreEl.textContent = cleanScoreString(score.team2.score, score.sport);
-    team2BattingDot.classList.toggle("hidden", !score.team2.is_batting);
+      const t2abbr = score.team2.abbreviation || score.team2.name || "T2";
+      team2NameEl.textContent  = t2abbr;
+      team2ScoreEl.textContent = cleanScoreString(score.team2.score, score.sport);
+      team2BattingDot.classList.toggle("hidden", !score.team2.is_batting);
+    }
 
-    // Stats
-    if (score.sport === "Soccer") {
+    // Footer stats
+    if (isFootball) {
       if (statsLeftEl) statsLeftEl.classList.add("hidden");
       if (targetContainer) targetContainer.classList.add("hidden");
-      if (soccerClockContainer) {
-        soccerClockContainer.classList.remove("hidden");
-        if (soccerClockValEl) {
-          soccerClockValEl.textContent = score.soccer_clock || "-";
-        }
-      }
     } else {
       if (statsLeftEl) statsLeftEl.classList.remove("hidden");
-      if (soccerClockContainer) soccerClockContainer.classList.add("hidden");
 
       if (crrValEl) crrValEl.textContent = score.crr.toFixed(2);
 

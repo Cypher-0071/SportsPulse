@@ -16,7 +16,8 @@
         <span id="live-indicator" class="live-tag">LIVE</span>
       </header>
       
-      <section class="scores">
+      <!-- Cricket layout: stacked rows -->
+      <section class="scores" id="cricket-scores">
         <div id="team1-row" class="team-row">
           <div class="team-info">
             <span id="team1-name" class="team-name">INDIA</span>
@@ -33,9 +34,25 @@
           <span id="team2-score" class="team-score">Yet to bat</span>
         </div>
       </section>
+
+      <!-- Football layout: horizontal broadcast bar -->
+      <section class="scores hidden" id="football-scores">
+        <div class="fb-team fb-team-left">
+          <span id="fb-team1-name" class="fb-team-name"></span>
+        </div>
+        <span id="fb-team1-score" class="fb-score-box">0</span>
+        <div class="fb-center">
+          <span id="fb-clock" class="fb-clock">-</span>
+          <span id="fb-sub" class="fb-sub"></span>
+        </div>
+        <span id="fb-team2-score" class="fb-score-box">0</span>
+        <div class="fb-team fb-team-right">
+          <span id="fb-team2-name" class="fb-team-name"></span>
+        </div>
+      </section>
       
       <footer id="stats-row" class="stats-bar">
-        <div class="stats-left">
+        <div class="stats-left" id="stats-left-el">
           <div class="stat-item">CRR <span id="crr-val">0.00</span></div>
           <span id="rrr-sep" class="stat-sep hidden">·</span>
           <div id="rrr-container" class="stat-item hidden">RRR <span id="rrr-val">0.00</span></div>
@@ -43,7 +60,6 @@
           <div id="need-container" class="stat-item hidden"><span id="need-val">Need 0</span></div>
         </div>
         <div id="target-container" class="stat-item hidden target-right">TGT <span id="target-val">0</span></div>
-        <div id="soccer-clock-container" class="stat-item hidden soccer-clock-left">TIME <span id="soccer-clock-val">-</span></div>
       </footer>
     </main>
 

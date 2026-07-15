@@ -88,18 +88,31 @@ pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle, matc
                 "https://site.api.espn.com/apis/site/v2/sports/{}/{}/summary?event={}",
                 sport, series_id, match_id
             );
+            eprintln!("[DEBUG] Fetching: {}", detail_url);
 
             match client.get(&detail_url).send().await {
                 Ok(detail_resp) => {
+                    let status_code = detail_resp.status();
                     if let Ok(detail_json) = detail_resp.json::<serde_json::Value>().await {
                         let parsed_score = if sport == "soccer" {
                             parse_soccer_match_detail(&detail_json, &series_id, &match_id)
                         } else {
                             parse_match_detail(&detail_json, &series_id, &match_id)
                         };
+                        eprintln!("[DEBUG] HTTP {} | parse result: {}", status_code, parsed_score.is_some());
 
                         if let Some(score) = parsed_score {
                             cache.set(Some(score.clone()));
+
+                            // Dynamically resize main window depending on the sport
+                            if let Some(main_win) = app_handle.get_webview_window("main") {
+                                let size = if score.sport == crate::models::SportType::Soccer {
+                                    tauri::LogicalSize::new(260.0, 40.0)
+                                } else {
+                                    tauri::LogicalSize::new(340.0, 140.0)
+                                };
+                                let _ = main_win.set_size(tauri::Size::Logical(size));
+                            }
 
                             // Detect match change initialization for completed status
                             let is_first_fetch_for_match = last_tracked_match_id.as_ref() != Some(&match_id);
@@ -196,7 +209,7 @@ pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle, matc
                                     }
                                 }
                                 MatchStatus::Break => Duration::from_secs(30),
-                                MatchStatus::Scheduled => Duration::from_secs(300),
+                                MatchStatus::Scheduled => Duration::from_secs(30),
                                 MatchStatus::Completed => Duration::from_secs(300),
                                 MatchStatus::NoMatch => Duration::from_secs(300),
                             };
@@ -209,6 +222,10 @@ pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle, matc
             }
         } else {
             cache.set(None);
+            sleep_duration = Duration::from_secs(30); // Re-check scoreboard every 30s for new live matches
+            if let Some(main_win) = app_handle.get_webview_window("main") {
+                let _ = main_win.set_size(tauri::Size::Logical(tauri::LogicalSize::new(340.0, 140.0)));
+            }
         }
 
         tokio::time::sleep(sleep_duration).await;

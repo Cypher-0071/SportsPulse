@@ -274,52 +274,98 @@ body {
   color: #e8e8ec;
 }
 
-/* ─── Soccer Board Layout (TV Broadcast Style) ─── */
-.soccer-layout .scores {
+/* ─── Football Broadcast TV Layout ─── */
+.soccer-layout .header {
+  display: none !important;
+}
+
+.soccer-layout .stats-bar {
+  display: none !important;
+}
+
+.soccer-layout.card {
+  padding: 0 !important;
+  border-radius: 8px !important;
+  height: 40px !important;
+  overflow: hidden;
+  justify-content: center;
+  background: #0f0f12;
+}
+
+#football-scores {
+  display: flex;
   flex-direction: row;
-  justify-content: center;
   align-items: center;
-  gap: 16px;
-  padding: 10px 0;
-  background: #141419;
-  border-radius: 6px;
-  margin: 6px 0;
-  border: 1px solid #1e1e24;
+  justify-content: space-between;
+  padding: 0 16px;
+  margin: 0;
+  background: transparent;
+  border: none;
+  overflow: hidden;
+  height: 100%;
+  box-sizing: border-box;
 }
 
-.soccer-layout .team-row {
-  justify-content: center;
-  gap: 8px;
-  padding: 0;
+#football-scores.hidden {
+  display: none;
 }
 
-.soccer-layout #team1-row::after {
-  content: ":";
-  color: #6b6f7b;
-  font-weight: 700;
-  font-size: 14px;
-  margin-left: 12px;
+.fb-team {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  min-width: 0;
 }
 
-.soccer-layout .team-name {
+.fb-team-left { justify-content: flex-end; text-align: right; margin-right: 12px; }
+.fb-team-right { justify-content: flex-start; text-align: left; margin-left: 12px; }
+
+.fb-team-name {
   font-size: 12px;
-  font-weight: 700;
-  color: #8b8fa0;
-  letter-spacing: 0.5px;
+  font-weight: 600;
+  color: #c8cad0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.soccer-layout .team-score {
-  font-size: 15px;
+.fb-score-box {
+  font-size: 22px;
   font-weight: 800;
   color: #ffffff;
-  background: #22222a;
-  padding: 2px 7px;
-  border-radius: 4px;
-  min-width: 14px;
+  min-width: 24px;
   text-align: center;
   font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
 }
 
-.soccer-layout #team2-row {
-  flex-direction: row-reverse;
+.fb-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  flex-shrink: 0;
+  min-width: 48px;
+  margin: 0 8px;
 }
+
+.fb-clock {
+  font-size: 11px;
+  font-weight: 700;
+  color: #ff4a4a;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.5px;
+  background: rgba(255, 74, 74, 0.1);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.fb-sub {
+  font-size: 9px;
+  font-weight: 500;
+  color: #6b6f7b;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+}
+

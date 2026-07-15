@@ -80,15 +80,21 @@ pub fn run() {
                         }
                         other => {
                             if other.starts_with("match_") {
-                                let parts: Vec<&str> = other.split('_').collect();
-                                if parts.len() == 4 {
-                                    let sport_slug = parts[1].to_string();
-                                    let series_id = parts[2].to_string();
-                                    let match_id = parts[3].to_string();
+                                let payload = &other[6..]; // Strip "match_" prefix
+                                let parts: Vec<&str> = payload.split('_').collect();
+                                eprintln!("[DEBUG] Menu selected raw ID: '{}' | parts: {:?}", other, parts);
+                                if parts.len() >= 3 {
+                                    let sport_slug = parts[0].to_string();
+                                    let match_id = parts[parts.len() - 1].to_string();
+                                    let series_id = parts[1..parts.len() - 1].join("_");
+                                    eprintln!("[DEBUG] Parsed → sport='{}' series='{}' match='{}'", sport_slug, series_id, match_id);
+                                    
                                     let match_state = app.state::<match_state::ActiveMatchesState>();
                                     if let Ok(mut sel) = match_state.selected_match.lock() {
                                         *sel = Some((sport_slug, series_id, match_id));
                                     };
+                                } else {
+                                    eprintln!("[DEBUG] Selection ignored – not enough parts ({})", parts.len());
                                 }
                             }
                         }

@@ -26,7 +26,9 @@ pub fn parse_all_live_indian_matches(value: &serde_json::Value) -> Vec<(String, 
                                             }
                                         }
                                         if is_india_match {
-                                            matches.push((series_id.to_string(), match_id.to_string(), name.to_string()));
+                                            let prefix = if status == "in" { "🔴 " } else { "⏳ " };
+                                            let match_name = format!("{}{}", prefix, name);
+                                            matches.push((series_id.to_string(), match_id.to_string(), match_name));
                                         }
                                     }
                                 }
@@ -332,7 +334,8 @@ pub fn parse_soccer_matches(value: &serde_json::Value) -> Vec<(String, String, S
                                             match_name = format!("{} vs {}", team1, team2);
                                         }
                                     }
-                                    matches.push((series_id.clone(), match_id.to_string(), match_name));
+                                    let prefix = if status == "in" { "🔴 " } else { "⏳ " };
+                                    matches.push((series_id.clone(), match_id.to_string(), format!("{}{}", prefix, match_name)));
                                 }
                             }
                         }
@@ -346,14 +349,26 @@ pub fn parse_soccer_matches(value: &serde_json::Value) -> Vec<(String, String, S
 
 pub fn parse_soccer_match_detail(value: &serde_json::Value, series_id: &str, match_id: &str) -> Option<MatchScore> {
     let header = value.get("header")?;
-    let match_title = header.get("name")?.as_str()?.to_string();
+    let match_title = header.get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Soccer Match")
+        .to_string();
 
     let competitions = header.get("competitions")?.as_array()?;
     let comp = competitions.get(0)?;
 
     let status = comp.get("status")?;
-    let state = status.get("type")?.get("state")?.as_str()?;
-    let detail = status.get("type")?.get("detail")?.as_str()?.to_string();
+    let state = status.get("type")
+        .and_then(|t| t.get("state"))
+        .and_then(|s| s.as_str())
+        .unwrap_or("pre");
+
+    // "detail" is optional – absent before kickoff
+    let detail = status.get("type")
+        .and_then(|t| t.get("detail"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
 
     let status_enum = match state {
         "in" => MatchStatus::Live,
@@ -362,10 +377,9 @@ pub fn parse_soccer_match_detail(value: &serde_json::Value, series_id: &str, mat
         _ => MatchStatus::NoMatch,
     };
 
-    let competitors_arr = comp.get("competitors")?.as_array()?;
-    if competitors_arr.len() < 2 {
-        return None;
-    }
+    let competitors_arr = comp.get("competitors")
+        .and_then(|v| v.as_array())
+        .filter(|a| a.len() >= 2)?;
 
     let team1 = parse_soccer_competitor(&competitors_arr[0]);
     let team2 = parse_soccer_competitor(&competitors_arr[1]);
@@ -374,6 +388,8 @@ pub fn parse_soccer_match_detail(value: &serde_json::Value, series_id: &str, mat
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
+
+    let clock = if detail.is_empty() { None } else { Some(detail) };
 
     Some(MatchScore {
         match_id: match_id.to_string(),
@@ -389,12 +405,12 @@ pub fn parse_soccer_match_detail(value: &serde_json::Value, series_id: &str, mat
         runs_needed: None,
         timestamp,
         sport: SportType::Soccer,
-        soccer_clock: Some(detail),
+        soccer_clock: clock,
     })
 }
 
 fn parse_soccer_competitor(comp: &serde_json::Value) -> TeamScore {
-    let team = comp.get("team").unwrap();
+    let team = comp.get("team").unwrap_or(comp);
     let id = team.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let name = team.get("displayName").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let abbreviation = team.get("abbreviation").and_then(|v| v.as_str()).unwrap_or("").to_string();
