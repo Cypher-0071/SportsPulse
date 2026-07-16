@@ -18,7 +18,7 @@
 - **Seamless OS Integration**:
   - **Global Shortcut**: Toggle scoreboard visibility at any time with `Ctrl+Alt+Space`.
   - **System Tray**: Run in the background with a system tray menu to launch the dashboard or quit the app.
-  - **Interactive Popup Notifications**: Mini-popups at the bottom-right of your screen alert you to major match events (wickets, boundaries, goals, and wins) even when the main scoreboard is hidden.
+  - **Interactive Popup Notifications**: Mini-popups at the bottom-right of your screen alert you to major match events (wickets, boundaries, goals, and wins) when the main scoreboard is hidden.
 
 ---
 
