@@ -29,7 +29,7 @@ fn hide_mini_popup(app: tauri::AppHandle) {
 }
 
 #[tauri::command]
-fn get_discovered_matches(state: tauri::State<'_, match_state::ActiveMatchesState>) -> Vec<(String, String, String, String, String, String)> {
+fn get_discovered_matches(state: tauri::State<'_, match_state::ActiveMatchesState>) -> Vec<(String, String, String, String, String, String, String)> {
     if let Ok(active) = state.active_matches.lock() {
         active.clone()
     } else {

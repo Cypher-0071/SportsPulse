@@ -52,8 +52,8 @@ pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle, matc
         cricket_matches.sort_by_key(|m| m.1.clone());
         cricket_matches.dedup_by_key(|m| m.1.clone());
         
-        for (series_id, match_id, title, status, league_name) in cricket_matches {
-            discovered_matches.push(("cricket".to_string(), series_id, match_id, title, status, league_name));
+        for (series_id, match_id, title, status, league_name, start_time) in cricket_matches {
+            discovered_matches.push(("cricket".to_string(), series_id, match_id, title, status, league_name, start_time));
         }
 
         // 2. Fetch Soccer Scoreboards
@@ -75,8 +75,8 @@ pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle, matc
         soccer_matches.sort_by_key(|m| m.1.clone());
         soccer_matches.dedup_by_key(|m| m.1.clone());
 
-        for (series_id, match_id, title, status, league_name) in soccer_matches {
-            discovered_matches.push(("soccer".to_string(), series_id, match_id, title, status, league_name));
+        for (series_id, match_id, title, status, league_name, start_time) in soccer_matches {
+            discovered_matches.push(("soccer".to_string(), series_id, match_id, title, status, league_name, start_time));
         }
 
         // Update active matches list
@@ -91,74 +91,111 @@ pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle, matc
         let match_to_track = match_state.selected_match.lock().ok().and_then(|s| s.clone());
 
         if let Some((sport, series_id, match_id)) = match_to_track {
-            let detail_url = format!(
-                "https://site.api.espn.com/apis/site/v2/sports/{}/{}/summary?event={}",
-                sport, series_id, match_id
-            );
-            eprintln!("[DEBUG] Fetching: {}", detail_url);
+            let is_already_completed = last_completed_match_id.as_ref() == Some(&match_id);
 
-            match client.get(&detail_url).send().await {
-                Ok(detail_resp) => {
-                    let status_code = detail_resp.status();
-                    if let Ok(detail_json) = detail_resp.json::<serde_json::Value>().await {
-                        let parsed_score = if sport == "soccer" {
-                            parse_soccer_match_detail(&detail_json, &series_id, &match_id)
-                        } else {
-                            parse_match_detail(&detail_json, &series_id, &match_id)
-                        };
-                        eprintln!("[DEBUG] HTTP {} | parse result: {}", status_code, parsed_score.is_some());
+            if is_already_completed {
+                // Already fetched completed match final score and cached it. No need to poll again.
+                sleep_duration = Duration::from_secs(300);
+            } else {
+                let detail_url = format!(
+                    "https://site.api.espn.com/apis/site/v2/sports/{}/{}/summary?event={}",
+                    sport, series_id, match_id
+                );
+                eprintln!("[DEBUG] Fetching: {}", detail_url);
 
-                        if let Some(score) = parsed_score {
-                            cache.set(Some(score.clone()));
+                match client.get(&detail_url).send().await {
+                    Ok(detail_resp) => {
+                        let status_code = detail_resp.status();
+                        if let Ok(detail_json) = detail_resp.json::<serde_json::Value>().await {
+                            let parsed_score = if sport == "soccer" {
+                                parse_soccer_match_detail(&detail_json, &series_id, &match_id)
+                            } else {
+                                parse_match_detail(&detail_json, &series_id, &match_id)
+                            };
+                            eprintln!("[DEBUG] HTTP {} | parse result: {}", status_code, parsed_score.is_some());
 
-                            // Dynamically resize main window depending on the sport
-                            if let Some(main_win) = app_handle.get_webview_window("main") {
-                                let size = if score.sport == crate::models::SportType::Soccer {
-                                    tauri::LogicalSize::new(260.0, 40.0)
-                                } else if score.status == MatchStatus::Scheduled || score.status == MatchStatus::Completed {
-                                    tauri::LogicalSize::new(340.0, 90.0)
-                                } else {
-                                    tauri::LogicalSize::new(340.0, 110.0)
-                                };
-                                let _ = main_win.set_size(tauri::Size::Logical(size));
-                                let _ = main_win.move_window(Position::BottomRight);
-                            }
+                            if let Some(score) = parsed_score {
+                                cache.set(Some(score.clone()));
 
-                            // Detect match change initialization for completed status
-                            let is_first_fetch_for_match = last_tracked_match_id.as_ref() != Some(&match_id);
-                            if is_first_fetch_for_match {
-                                last_tracked_match_id = Some(match_id.clone());
-                                last_ball_id = None;
-                                if score.status == MatchStatus::Completed {
-                                    last_completed_match_id = Some(match_id.clone());
-                                } else {
-                                    last_completed_match_id = None;
-                                }
-                            }
-
-                            // Check for win event (transition to Completed)
-                            if score.status == MatchStatus::Completed && last_completed_match_id.as_ref() != Some(&match_id) {
-                                last_completed_match_id = Some(match_id.clone());
-
-                                let winner_name = if score.team1.is_winner {
-                                    Some(score.team1.name.clone())
-                                } else if score.team2.is_winner {
-                                    Some(score.team2.name.clone())
-                                } else {
-                                    None
-                                };
-
-                                if let Some(w_name) = winner_name {
-                                    use crate::models::{MatchEvent, MatchEventType};
-                                    let win_event = MatchEvent {
-                                        event_type: MatchEventType::Win,
-                                        title: "MATCH WON!".to_string(),
-                                        description: format!("{} won the match!", w_name),
-                                        score: format!("{} vs {}", score.team1.abbreviation, score.team2.abbreviation),
-                                        sport: sport.clone(),
+                                // Dynamically resize main window depending on the sport
+                                if let Some(main_win) = app_handle.get_webview_window("main") {
+                                    let size = if score.sport == crate::models::SportType::Soccer {
+                                        tauri::LogicalSize::new(260.0, 40.0)
+                                    } else if score.status == MatchStatus::Scheduled || score.status == MatchStatus::Completed {
+                                        tauri::LogicalSize::new(340.0, 90.0)
+                                    } else {
+                                        tauri::LogicalSize::new(340.0, 110.0)
                                     };
-                                    cache.set_latest_event(Some(win_event.clone()));
-                                    let _ = app_handle.emit("match-event", &win_event);
+                                    let _ = main_win.set_size(tauri::Size::Logical(size));
+                                    let _ = main_win.move_window(Position::BottomRight);
+                                }
+
+                                // Detect match change initialization for completed status
+                                let is_first_fetch_for_match = last_tracked_match_id.as_ref() != Some(&match_id);
+                                if is_first_fetch_for_match {
+                                    last_tracked_match_id = Some(match_id.clone());
+                                    last_ball_id = None;
+                                    if score.status == MatchStatus::Completed {
+                                        last_completed_match_id = Some(match_id.clone());
+                                    } else {
+                                        last_completed_match_id = None;
+                                    }
+                                }
+
+                                // Check for win event (transition to Completed)
+                                if score.status == MatchStatus::Completed && last_completed_match_id.as_ref() != Some(&match_id) {
+                                    last_completed_match_id = Some(match_id.clone());
+
+                                    let winner_name = if score.team1.is_winner {
+                                        Some(score.team1.name.clone())
+                                    } else if score.team2.is_winner {
+                                        Some(score.team2.name.clone())
+                                    } else {
+                                        None
+                                    };
+
+                                    if let Some(w_name) = winner_name {
+                                        use crate::models::{MatchEvent, MatchEventType};
+                                        let win_event = MatchEvent {
+                                            event_type: MatchEventType::Win,
+                                            title: "MATCH WON!".to_string(),
+                                            description: format!("{} won the match!", w_name),
+                                            score: format!("{} vs {}", score.team1.abbreviation, score.team2.abbreviation),
+                                            sport: sport.clone(),
+                                        };
+                                        cache.set_latest_event(Some(win_event.clone()));
+                                        let _ = app_handle.emit("match-event", &win_event);
+
+                                        let main_visible = app_handle
+                                            .get_webview_window("main")
+                                            .and_then(|w| w.is_visible().ok())
+                                            .unwrap_or(false);
+
+                                        if !main_visible {
+                                            if let Some(mini_window) = app_handle.get_webview_window("mini_popup") {
+                                                let _ = mini_window.move_window(Position::BottomRight);
+                                                let _ = mini_window.show();
+                                                let _ = mini_window.set_focus();
+                                                let mini_clone = mini_window.clone();
+                                                tokio::spawn(async move {
+                                                    tokio::time::sleep(Duration::from_secs(8)).await;
+                                                    let _ = mini_clone.hide();
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Detect match events (boundaries/wickets in cricket, goals/red cards in soccer)
+                                let parsed_event = if sport == "soccer" {
+                                    parse_soccer_latest_event(&detail_json, &mut last_ball_id)
+                                } else {
+                                    parse_latest_event(&detail_json, &mut last_ball_id)
+                                };
+
+                                if let Some(event) = parsed_event {
+                                    cache.set_latest_event(Some(event.clone()));
+                                    let _ = app_handle.emit("match-event", &event);
 
                                     let main_visible = app_handle
                                         .get_webview_window("main")
@@ -172,69 +209,39 @@ pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle, matc
                                             let _ = mini_window.set_focus();
                                             let mini_clone = mini_window.clone();
                                             tokio::spawn(async move {
-                                                tokio::time::sleep(Duration::from_secs(8)).await;
+                                                tokio::time::sleep(Duration::from_secs(5)).await;
                                                 let _ = mini_clone.hide();
                                             });
                                         }
                                     }
                                 }
-                            }
 
-                            // Detect match events (boundaries/wickets in cricket, goals/red cards in soccer)
-                            let parsed_event = if sport == "soccer" {
-                                parse_soccer_latest_event(&detail_json, &mut last_ball_id)
-                            } else {
-                                parse_latest_event(&detail_json, &mut last_ball_id)
-                            };
-
-                            if let Some(event) = parsed_event {
-                                cache.set_latest_event(Some(event.clone()));
-                                let _ = app_handle.emit("match-event", &event);
-
-                                let main_visible = app_handle
-                                    .get_webview_window("main")
-                                    .and_then(|w| w.is_visible().ok())
-                                    .unwrap_or(false);
-
-                                if !main_visible {
-                                    if let Some(mini_window) = app_handle.get_webview_window("mini_popup") {
-                                        let _ = mini_window.move_window(Position::BottomRight);
-                                        let _ = mini_window.show();
-                                        let _ = mini_window.set_focus();
-                                        let mini_clone = mini_window.clone();
-                                        tokio::spawn(async move {
-                                            tokio::time::sleep(Duration::from_secs(5)).await;
-                                            let _ = mini_clone.hide();
-                                        });
-                                    }
-                                }
-                            }
-
-                            sleep_duration = match score.status {
-                                MatchStatus::Live => {
-                                    if sport == "soccer" {
-                                        Duration::from_secs(3)
-                                    } else {
-                                        // Set 10s polling rate for Test cricket (slower pace), 2s for T20/ODIs
-                                        let is_test = score.match_title.to_lowercase().contains("test");
-                                        if is_test {
-                                            Duration::from_secs(10)
+                                sleep_duration = match score.status {
+                                    MatchStatus::Live => {
+                                        if sport == "soccer" {
+                                            Duration::from_secs(3)
                                         } else {
-                                            Duration::from_secs(2)
+                                            // Set 10s polling rate for Test cricket (slower pace), 2s for T20/ODIs
+                                            let is_test = score.match_title.to_lowercase().contains("test");
+                                            if is_test {
+                                                Duration::from_secs(10)
+                                            } else {
+                                                Duration::from_secs(2)
+                                            }
                                         }
                                     }
-                                }
-                                MatchStatus::Break => Duration::from_secs(30),
-                                MatchStatus::Scheduled => Duration::from_secs(30),
-                                MatchStatus::Completed => Duration::from_secs(300),
-                                MatchStatus::NoMatch => Duration::from_secs(300),
-                            };
-                        } else {
-                            cache.set(None);
+                                    MatchStatus::Break => Duration::from_secs(30),
+                                    MatchStatus::Scheduled => Duration::from_secs(30),
+                                    MatchStatus::Completed => Duration::from_secs(300),
+                                    MatchStatus::NoMatch => Duration::from_secs(300),
+                                };
+                            } else {
+                                cache.set(None);
+                            }
                         }
                     }
+                    Err(e) => eprintln!("Error fetching match details: {}", e),
                 }
-                Err(e) => eprintln!("Error fetching match details: {}", e),
             }
         } else {
             cache.set(None);

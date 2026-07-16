@@ -89,7 +89,7 @@ async function updateScoreboard() {
     }
 
     // Status indicator
-    const isStale = (Math.floor(Date.now() / 1000) - score.timestamp) > 15;
+    const isStale = score.status === "Live" && (Math.floor(Date.now() / 1000) - score.timestamp) > 15;
     if (isStale || !navigator.onLine) {
       liveIndicatorEl.textContent = "⚠ RECONNECTING";
       liveIndicatorEl.style.color = "#ffb703";

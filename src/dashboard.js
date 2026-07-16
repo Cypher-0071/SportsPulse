@@ -71,6 +71,25 @@ async function refresh() {
     const liveMatches = sportMatches.filter(m => m[4] === "in");
     const upcomingMatches = sportMatches.filter(m => m[4] !== "in");
 
+function formatStartTime(rawIso) {
+  if (!rawIso) return "";
+  try {
+    const dateObj = new Date(rawIso);
+    if (isNaN(dateObj.getTime())) return "";
+    
+    // Explicitly format in India Standard Time (Asia/Kolkata)
+    const optionsDate = { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' };
+    const optionsTime = { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' };
+    
+    const dateStr = dateObj.toLocaleDateString("en-IN", optionsDate);
+    const timeStr = dateObj.toLocaleTimeString("en-IN", optionsTime);
+    
+    return `${dateStr}, ${timeStr}`;
+  } catch (e) {
+    return "";
+  }
+}
+
     function generateGroupedHtml(matchesList, isLiveSection) {
       if (matchesList.length === 0) return "";
       
@@ -88,7 +107,7 @@ async function refresh() {
         const leagueMatches = groups[leagueName];
         let cardsHtml = "";
         
-        leagueMatches.forEach(([sport, seriesId, matchId, cleanTitle]) => {
+        leagueMatches.forEach(([sport, seriesId, matchId, cleanTitle, status, leagueNameField, startTime]) => {
           const isActive = activeMatch && 
                            activeMatch.sport === sport && 
                            activeMatch.seriesId === seriesId && 
@@ -98,10 +117,19 @@ async function refresh() {
             ? `<button class="tracked-badge clickable-badge" onclick="window.untrack()" onmouseover="this.innerText='Untrack'" onmouseout="this.innerText='Tracked'">Tracked</button>`
             : `<button class="track-btn" onclick="window.selectAndTrack('${sport}', '${seriesId}', '${matchId}')">Track</button>`;
 
+          let dateHtml = "";
+          if (!isLiveSection && startTime) {
+            const formattedTime = formatStartTime(startTime);
+            if (formattedTime) {
+              dateHtml = `<span class="match-time">${formattedTime}</span>`;
+            }
+          }
+
           cardsHtml += `
             <div class="match-card">
               <div class="match-info">
                 <span class="match-title">${cleanTitle}</span>
+                ${dateHtml}
               </div>
               <div>
                 ${actionHtml}
