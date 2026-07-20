@@ -33,6 +33,7 @@
         "transparent": true,
         "alwaysOnTop": true,
         "skipTaskbar": true,
+        "focusable": false,
         "visible": false,
         "url": "mini_popup.html"
       },

@@ -173,9 +173,9 @@ pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle, matc
 
                                         if !main_visible {
                                             if let Some(mini_window) = app_handle.get_webview_window("mini_popup") {
+                                                let _ = mini_window.set_focusable(false);
                                                 let _ = mini_window.move_window(Position::BottomRight);
                                                 let _ = mini_window.show();
-                                                let _ = mini_window.set_focus();
                                                 let mini_clone = mini_window.clone();
                                                 tokio::spawn(async move {
                                                     tokio::time::sleep(Duration::from_secs(8)).await;
@@ -203,16 +203,16 @@ pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle, matc
                                         .unwrap_or(false);
 
                                     if !main_visible {
-                                        if let Some(mini_window) = app_handle.get_webview_window("mini_popup") {
-                                            let _ = mini_window.move_window(Position::BottomRight);
-                                            let _ = mini_window.show();
-                                            let _ = mini_window.set_focus();
-                                            let mini_clone = mini_window.clone();
-                                            tokio::spawn(async move {
-                                                tokio::time::sleep(Duration::from_secs(5)).await;
-                                                let _ = mini_clone.hide();
-                                            });
-                                        }
+                                         if let Some(mini_window) = app_handle.get_webview_window("mini_popup") {
+                                             let _ = mini_window.set_focusable(false);
+                                             let _ = mini_window.move_window(Position::BottomRight);
+                                             let _ = mini_window.show();
+                                             let mini_clone = mini_window.clone();
+                                             tokio::spawn(async move {
+                                                 tokio::time::sleep(Duration::from_secs(5)).await;
+                                                 let _ = mini_clone.hide();
+                                             });
+                                         }
                                     }
                                 }
 
