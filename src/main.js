@@ -202,6 +202,9 @@ function getCleanEventDetail(description, eventType) {
   }
 
   if (eventType === "Boundary") {
+    if (description.includes(":")) {
+      return description.split(":")[0].trim();
+    }
     if (description.includes(" to ")) {
       let afterTo = description.split(" to ")[1];
       if (afterTo && afterTo.includes(",")) {

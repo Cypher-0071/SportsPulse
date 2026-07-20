@@ -446,11 +446,19 @@ pub fn parse_latest_event(value: &serde_json::Value, last_ball_id: &mut Option<S
     let is_boundary = ball_data.get("boundary").and_then(|v| v.as_bool()).unwrap_or(false);
     let score_value = ball_data.get("scoreValue").and_then(|v| v.as_u64()).unwrap_or(0);
     if is_boundary || score_value == 4 || score_value == 6 {
+        let batsman_name = extract_batsman_name(ball_data, &None);
         let short_desc = ball_data.get("shortText").and_then(|v| v.as_str()).unwrap_or("");
+        
+        let desc = if !batsman_name.is_empty() && batsman_name != "Batsman" {
+            format!("{}: {}", batsman_name, short_desc)
+        } else {
+            short_desc.to_string()
+        };
+
         return Some(MatchEvent {
             event_type: MatchEventType::Boundary,
             title: if score_value == 6 { "SIX!" } else { "FOUR!" }.to_string(),
-            description: short_desc.to_string(),
+            description: desc,
             score: score_str,
             sport: "cricket".to_string(),
         });
