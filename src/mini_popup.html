@@ -109,6 +109,48 @@
         text-overflow: ellipsis;
       }
 
+      /* Right score container (stacked score on top, over below) */
+      .event-score-container {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        justify-content: center;
+        padding-right: 28px;
+        padding-left: 6px;
+        flex-shrink: 0;
+        gap: 1px;
+      }
+
+      .event-score-main {
+        font-size: 12px;
+        font-weight: 800;
+        color: #ffffff;
+        letter-spacing: 0.3px;
+        line-height: 1.1;
+        white-space: nowrap;
+      }
+
+      .event-score-sub {
+        font-size: 10px;
+        font-weight: 600;
+        color: #8b8fa0;
+        letter-spacing: 0.2px;
+        line-height: 1.1;
+        white-space: nowrap;
+      }
+
+      .popup.wicket .event-score-main { color: #ff6b6b; }
+      .popup.wicket .event-score-sub  { color: #ff9999; }
+
+      .popup.six .event-score-main    { color: #ff5260; }
+      .popup.six .event-score-sub     { color: #ff8590; }
+
+      .popup.four .event-score-main   { color: #f0b429; }
+      .popup.four .event-score-sub    { color: #fce391; }
+
+      .popup.goal .event-score-main   { color: #38b000; }
+      .popup.goal .event-score-sub    { color: #70e000; }
+
       /* Close button */
       .close-btn {
         position: absolute;
@@ -178,6 +220,10 @@
         <div id="event-headline" class="event-headline">—</div>
         <div id="event-detail" class="event-detail">—</div>
       </div>
+      <div id="event-score-container" class="event-score-container" style="display: none;">
+        <div id="event-score-main" class="event-score-main"></div>
+        <div id="event-score-sub" class="event-score-sub"></div>
+      </div>
       <button id="close-btn" class="close-btn">×</button>
     </div>
 
@@ -185,11 +231,14 @@
       const { invoke } = window.__TAURI__.core;
       const { listen } = window.__TAURI__.event;
 
-      const popup      = document.getElementById("popup");
-      const iconEl     = document.getElementById("event-icon");
-      const headlineEl = document.getElementById("event-headline");
-      const detailEl   = document.getElementById("event-detail");
-      const closeBtn   = document.getElementById("close-btn");
+      const popup          = document.getElementById("popup");
+      const iconEl         = document.getElementById("event-icon");
+      const headlineEl     = document.getElementById("event-headline");
+      const detailEl       = document.getElementById("event-detail");
+      const scoreContainer = document.getElementById("event-score-container");
+      const scoreMainEl    = document.getElementById("event-score-main");
+      const scoreSubEl     = document.getElementById("event-score-sub");
+      const closeBtn       = document.getElementById("close-btn");
 
       closeBtn.addEventListener("click", () => invoke("hide_mini_popup"));
 
@@ -260,7 +309,13 @@
           iconEl.textContent = "🟥";
         } else if (type === "Wicket") {
           popup.classList.add("wicket");
-          iconEl.textContent = "🎯";
+          iconEl.innerHTML = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="7" y1="10" x2="7" y2="22"/>
+            <line x1="12" y1="11" x2="12" y2="22"/>
+            <line x1="17" y1="10" x2="17" y2="22"/>
+            <path d="M4 6l5-2"/>
+            <path d="M13 4l6 4"/>
+          </svg>`;
         } else if (type === "Boundary") {
           if (isSix) {
             popup.classList.add("six");
@@ -276,6 +331,30 @@
 
         headlineEl.textContent = titleStr || "Event";
         detailEl.textContent   = getCleanEventDetail(payload.description, type);
+
+        if (payload.score && payload.score.trim() !== "") {
+          let scoreStr = payload.score.trim();
+          let mainPart = scoreStr;
+          let subPart  = "";
+
+          if (scoreStr.includes("|")) {
+            const parts = scoreStr.split("|");
+            mainPart = parts[0].trim();
+            subPart  = parts[1].trim();
+          } else if (scoreStr.includes("(") && scoreStr.includes(")")) {
+            const openIdx  = scoreStr.indexOf("(");
+            const closeIdx = scoreStr.indexOf(")");
+            mainPart = scoreStr.substring(0, openIdx).trim();
+            subPart  = scoreStr.substring(openIdx + 1, closeIdx).trim();
+          }
+
+          scoreMainEl.textContent = mainPart;
+          scoreSubEl.textContent  = subPart;
+          scoreSubEl.style.display = subPart ? "block" : "none";
+          scoreContainer.style.display = "flex";
+        } else {
+          scoreContainer.style.display = "none";
+        }
       }
 
       async function fetchAndApply() {

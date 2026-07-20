@@ -242,6 +242,146 @@ fn calculate_rrr(runs_needed: u32, total_overs: f32, current_overs: f32) -> f32 
     }
 }
 
+fn parse_batsman_from_text(text: &str) -> Option<String> {
+    let clean = text.trim();
+    if clean.is_empty() {
+        return None;
+    }
+    
+    if let Some(to_idx) = clean.find(" to ") {
+        let after_to = &clean[to_idx + 4..];
+        if let Some(out_idx) = after_to.find(", OUT").or_else(|| after_to.find(" OUT")) {
+            let name = after_to[..out_idx].trim();
+            if !name.is_empty() && name.len() < 40 {
+                return Some(name.to_string());
+            }
+        }
+    }
+
+    let work_text = if clean.starts_with("OUT!") || clean.starts_with("OUT,") || clean.starts_with("OUT ") {
+        clean.trim_start_matches("OUT!").trim_start_matches("OUT,").trim_start_matches("OUT").trim()
+    } else {
+        clean
+    };
+
+    let keywords = [" c ", " lbw", " b ", " run out", " st ", " hit wicket", " retired"];
+    let mut earliest_idx = None;
+
+    for kw in &keywords {
+        if let Some(idx) = work_text.find(kw) {
+            if earliest_idx.map_or(true, |prev| idx < prev) {
+                earliest_idx = Some(idx);
+            }
+        }
+    }
+
+    if let Some(idx) = earliest_idx {
+        let candidate = work_text[..idx].trim();
+        if !candidate.is_empty() && candidate.len() < 40 {
+            return Some(candidate.to_string());
+        }
+    }
+
+    None
+}
+
+fn extract_batsman_name(ball_data: &serde_json::Value, dismissal: &Option<&serde_json::Value>) -> String {
+    if let Some(d) = dismissal {
+        if let Some(b) = d.get("batsman") {
+            if let Some(a) = b.get("athlete") {
+                if let Some(name) = a.get("displayName").or_else(|| a.get("name")).or_else(|| a.get("shortName")).and_then(|v| v.as_str()) {
+                    if !name.is_empty() && name != "Batsman" {
+                        return name.to_string();
+                    }
+                }
+            }
+            if let Some(name) = b.get("displayName").or_else(|| b.get("name")).or_else(|| b.get("shortName")).and_then(|v| v.as_str()) {
+                if !name.is_empty() && name != "Batsman" {
+                    return name.to_string();
+                }
+            }
+        }
+        
+        if let Some(a) = d.get("athlete") {
+            if let Some(name) = a.get("displayName").or_else(|| a.get("name")).or_else(|| a.get("shortName")).and_then(|v| v.as_str()) {
+                if !name.is_empty() && name != "Batsman" {
+                    return name.to_string();
+                }
+            }
+        }
+    }
+
+    if let Some(b) = ball_data.get("batsman") {
+        if let Some(a) = b.get("athlete") {
+            if let Some(name) = a.get("displayName").or_else(|| a.get("name")).and_then(|v| v.as_str()) {
+                if !name.is_empty() && name != "Batsman" {
+                    return name.to_string();
+                }
+            }
+        }
+        if let Some(name) = b.get("displayName").or_else(|| b.get("name")).and_then(|v| v.as_str()) {
+            if !name.is_empty() && name != "Batsman" {
+                return name.to_string();
+            }
+        }
+    }
+
+    if let Some(batsmen) = ball_data.get("batsmen").and_then(|v| v.as_array()) {
+        for b in batsmen {
+            let name = b.get("athlete").and_then(|a| a.get("displayName").or_else(|| a.get("name")))
+                .or_else(|| b.get("displayName")).or_else(|| b.get("name"))
+                .and_then(|v| v.as_str());
+            if let Some(n) = name {
+                if !n.is_empty() && n != "Batsman" {
+                    return n.to_string();
+                }
+            }
+        }
+    }
+
+    let text_sources = [
+        dismissal.and_then(|d| d.get("text").and_then(|v| v.as_str())),
+        dismissal.and_then(|d| d.get("shortText").and_then(|v| v.as_str())),
+        ball_data.get("shortText").and_then(|v| v.as_str()),
+        ball_data.get("text").and_then(|v| v.as_str()),
+    ];
+
+    for src in text_sources.into_iter().flatten() {
+        if let Some(name) = parse_batsman_from_text(src) {
+            if !name.is_empty() && name != "Batsman" {
+                return name;
+            }
+        }
+    }
+
+    "Batsman".to_string()
+}
+
+fn extract_score_str(ball_data: &serde_json::Value) -> String {
+    let team_abbr = ball_data.get("team")
+        .and_then(|t| t.get("abbreviation").or_else(|| t.get("displayName")))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let home_score = ball_data.get("homeScore")
+        .or_else(|| ball_data.get("currentScore"))
+        .or_else(|| ball_data.get("score"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let over_num = ball_data.get("over")
+        .and_then(|o| o.get("overs").or_else(|| o.get("displayValue")).and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))))
+        .or_else(|| ball_data.get("overs").and_then(|v| v.as_f64()))
+        .unwrap_or(0.0);
+
+    match (team_abbr.is_empty(), home_score.is_empty()) {
+        (false, false) => format!("{} {} ({} ov)", team_abbr, home_score, over_num),
+        (true, false) => format!("{} ({} ov)", home_score, over_num),
+        (false, true) => format!("{} ({} ov)", team_abbr, over_num),
+        (true, true) => if over_num > 0.0 { format!("{} ov", over_num) } else { String::new() },
+    }
+}
+
 pub fn parse_latest_event(value: &serde_json::Value, last_ball_id: &mut Option<String>) -> Option<MatchEvent> {
     let header = value.get("header")?;
     let competitions = header.get("competitions")?.as_array()?;
@@ -277,21 +417,27 @@ pub fn parse_latest_event(value: &serde_json::Value, last_ball_id: &mut Option<S
     
     *last_ball_id = Some(latest_key_str);
     
-    let home_score = ball_data.get("homeScore").and_then(|v| v.as_str()).unwrap_or("");
-    let over_num = ball_data.get("over").and_then(|o| o.get("overs").and_then(|v| v.as_f64())).unwrap_or(0.0);
-    let team_abbr = ball_data.get("team").and_then(|t| t.get("abbreviation").and_then(|v| v.as_str())).unwrap_or("");
-    let score_str = format!("{} {} ({} ov)", team_abbr, home_score, over_num);
+    let score_str = extract_score_str(ball_data);
 
     let dismissal = ball_data.get("dismissal");
     let is_dismissal = dismissal.and_then(|d| d.get("dismissal").and_then(|v| v.as_bool())).unwrap_or(false);
     if is_dismissal {
-        let batsman_name = dismissal.and_then(|d| d.get("batsman").and_then(|b| b.get("athlete").and_then(|a| a.get("displayName").and_then(|v| v.as_str())))).unwrap_or("Batsman");
+        let batsman_name = extract_batsman_name(ball_data, &dismissal);
         let dismissal_text = dismissal.and_then(|d| d.get("text").and_then(|v| v.as_str())).unwrap_or("");
         let short_desc = ball_data.get("shortText").and_then(|v| v.as_str()).unwrap_or("");
+        
+        let desc = if !dismissal_text.is_empty() {
+            format!("{}: {} ({})", batsman_name, dismissal_text, short_desc)
+        } else if !short_desc.is_empty() {
+            format!("{}: {}", batsman_name, short_desc)
+        } else {
+            batsman_name.clone()
+        };
+
         return Some(MatchEvent {
             event_type: MatchEventType::Wicket,
             title: "Wicket!".to_string(),
-            description: format!("{}: {} ({})", batsman_name, dismissal_text, short_desc),
+            description: desc,
             score: score_str,
             sport: "cricket".to_string(),
         });
@@ -505,4 +651,29 @@ pub fn parse_soccer_latest_event(value: &serde_json::Value, last_event_id: &mut 
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_batsman_from_text() {
+        assert_eq!(parse_batsman_from_text("V Kohli c Smith b Starc"), Some("V Kohli".to_string()));
+        assert_eq!(parse_batsman_from_text("OUT! R Sharma lbw b Cummins"), Some("R Sharma".to_string()));
+        assert_eq!(parse_batsman_from_text("Starc to S Gill, OUT, caught by Smith"), Some("S Gill".to_string()));
+        assert_eq!(parse_batsman_from_text("KL Rahul b Bumrah"), Some("KL Rahul".to_string()));
+        assert_eq!(parse_batsman_from_text("R Pant run out (Jadeja)"), Some("R Pant".to_string()));
+    }
+
+    #[test]
+    fn test_extract_score_str() {
+        let json = serde_json::json!({
+            "team": { "abbreviation": "IND" },
+            "homeScore": "145/3",
+            "over": { "overs": 14.2 }
+        });
+        assert_eq!(extract_score_str(&json), "IND 145/3 (14.2 ov)");
+    }
+}
+
 
