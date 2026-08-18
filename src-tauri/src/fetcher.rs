@@ -12,10 +12,11 @@ use crate::match_state::ActiveMatchesState;
 
 pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle, match_state: ActiveMatchesState) {
     let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".parse().unwrap());
-    headers.insert("Accept", "application/json".parse().unwrap());
+    headers.insert("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36".parse().unwrap());
+    headers.insert("Accept", "*/*".parse().unwrap());
     headers.insert("Accept-Language", "en-US,en;q=0.9".parse().unwrap());
-    headers.insert("Referer", "https://www.espn.com/cricket/".parse().unwrap());
+    headers.insert("Origin", "https://www.espn.in".parse().unwrap());
+    headers.insert("Referer", "https://www.espn.in/cricket/".parse().unwrap());
 
     let client = Client::builder()
         .tcp_nodelay(true)
@@ -26,67 +27,73 @@ pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle, matc
     let mut last_ball_id: Option<String> = None;
     let mut last_tracked_match_id: Option<String> = None;
     let mut last_completed_match_id: Option<String> = None;
+    let mut last_scoreboard_fetch: Option<std::time::Instant> = None;
 
     loop {
         let mut sleep_duration = Duration::from_secs(300);
-        let mut discovered_matches = Vec::new();
 
-        let today_str = chrono::Local::now().format("%Y%m%d").to_string();
-        
-        // 1. Fetch Cricket Scoreboards
-        let mut cricket_matches = Vec::new();
-        // Default (Live / Recent)
-        if let Ok(resp) = client.get("https://site.web.api.espn.com/apis/personalized/v2/scoreboard/header?sport=cricket&region=in").send().await {
-            if let Ok(json) = resp.json::<serde_json::Value>().await {
-                cricket_matches.extend(parse_all_live_indian_matches(&json));
+        // Fetch scoreboards if not fetched recently (every 60s)
+        let should_fetch_scoreboard = last_scoreboard_fetch.map_or(true, |t| t.elapsed() >= Duration::from_secs(60));
+        if should_fetch_scoreboard {
+            let mut discovered_matches = Vec::new();
+            let today_str = chrono::Local::now().format("%Y%m%d").to_string();
+            
+            // 1. Fetch Cricket Scoreboards
+            let mut cricket_matches = Vec::new();
+            // Default (Live / Recent)
+            if let Ok(resp) = client.get("https://site.web.api.espn.com/apis/personalized/v2/scoreboard/header?sport=cricket&region=in").send().await {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    cricket_matches.extend(parse_all_live_indian_matches(&json));
+                }
             }
-        }
-        // Today's Scheduled
-        let cricket_today_url = format!("https://site.web.api.espn.com/apis/personalized/v2/scoreboard/header?sport=cricket&region=in&dates={}", today_str);
-        if let Ok(resp) = client.get(&cricket_today_url).send().await {
-            if let Ok(json) = resp.json::<serde_json::Value>().await {
-                cricket_matches.extend(parse_all_live_indian_matches(&json));
+            // Today's Scheduled
+            let cricket_today_url = format!("https://site.web.api.espn.com/apis/personalized/v2/scoreboard/header?sport=cricket&region=in&dates={}", today_str);
+            if let Ok(resp) = client.get(&cricket_today_url).send().await {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    cricket_matches.extend(parse_all_live_indian_matches(&json));
+                }
             }
-        }
-        
-        cricket_matches.sort_by_key(|m| m.1.clone());
-        cricket_matches.dedup_by_key(|m| m.1.clone());
-        
-        for (series_id, match_id, title, status, league_name, start_time) in cricket_matches {
-            discovered_matches.push(("cricket".to_string(), series_id, match_id, title, status, league_name, start_time));
-        }
-
-        // 2. Fetch Soccer Scoreboards
-        let mut soccer_matches = Vec::new();
-        // Default (Live / Recent)
-        if let Ok(resp) = client.get("https://site.web.api.espn.com/apis/personalized/v2/scoreboard/header?sport=soccer&region=in").send().await {
-            if let Ok(json) = resp.json::<serde_json::Value>().await {
-                soccer_matches.extend(parse_soccer_matches(&json));
+            
+            cricket_matches.sort_by_key(|m| m.1.clone());
+            cricket_matches.dedup_by_key(|m| m.1.clone());
+            
+            for (series_id, match_id, title, status, league_name, start_time) in cricket_matches {
+                discovered_matches.push(("cricket".to_string(), series_id, match_id, title, status, league_name, start_time));
             }
-        }
-        // Today's Scheduled
-        let soccer_today_url = format!("https://site.web.api.espn.com/apis/personalized/v2/scoreboard/header?sport=soccer&region=in&dates={}", today_str);
-        if let Ok(resp) = client.get(&soccer_today_url).send().await {
-            if let Ok(json) = resp.json::<serde_json::Value>().await {
-                soccer_matches.extend(parse_soccer_matches(&json));
+
+            // 2. Fetch Soccer Scoreboards
+            let mut soccer_matches = Vec::new();
+            // Default (Live / Recent)
+            if let Ok(resp) = client.get("https://site.web.api.espn.com/apis/personalized/v2/scoreboard/header?sport=soccer&region=in").send().await {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    soccer_matches.extend(parse_soccer_matches(&json));
+                }
             }
-        }
-
-        soccer_matches.sort_by_key(|m| m.1.clone());
-        soccer_matches.dedup_by_key(|m| m.1.clone());
-
-        for (series_id, match_id, title, status, league_name, start_time) in soccer_matches {
-            discovered_matches.push(("soccer".to_string(), series_id, match_id, title, status, league_name, start_time));
-        }
-
-        // Update active matches list
-        if let Ok(mut active_m) = match_state.active_matches.lock() {
-            if *active_m != discovered_matches {
-                *active_m = discovered_matches.clone();
+            // Today's Scheduled
+            let soccer_today_url = format!("https://site.web.api.espn.com/apis/personalized/v2/scoreboard/header?sport=soccer&region=in&dates={}", today_str);
+            if let Ok(resp) = client.get(&soccer_today_url).send().await {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    soccer_matches.extend(parse_soccer_matches(&json));
+                }
             }
+
+            soccer_matches.sort_by_key(|m| m.1.clone());
+            soccer_matches.dedup_by_key(|m| m.1.clone());
+
+            for (series_id, match_id, title, status, league_name, start_time) in soccer_matches {
+                discovered_matches.push(("soccer".to_string(), series_id, match_id, title, status, league_name, start_time));
+            }
+
+            // Update active matches list
+            if let Ok(mut active_m) = match_state.active_matches.lock() {
+                if *active_m != discovered_matches {
+                    *active_m = discovered_matches.clone();
+                }
+            }
+
+            last_scoreboard_fetch = Some(std::time::Instant::now());
         }
 
-        // Determine which match to track
         // Determine which match to track
         let match_to_track = match_state.selected_match.lock().ok().and_then(|s| s.clone());
 
@@ -98,7 +105,7 @@ pub async fn start_polling(cache: ScoreCache, app_handle: tauri::AppHandle, matc
                 sleep_duration = Duration::from_secs(300);
             } else {
                 let detail_url = format!(
-                    "https://site.api.espn.com/apis/site/v2/sports/{}/{}/summary?event={}",
+                    "https://site.web.api.espn.com/apis/site/v2/sports/{}/{}/summary?event={}",
                     sport, series_id, match_id
                 );
                 eprintln!("[DEBUG] Fetching: {}", detail_url);

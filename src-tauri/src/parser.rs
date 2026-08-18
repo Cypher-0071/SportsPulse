@@ -107,6 +107,10 @@ pub fn parse_match_detail(value: &serde_json::Value, series_id: &str, match_id: 
     let mut runs_needed = None;
     let mut rrr = None;
 
+    let is_test = comp.get("class").and_then(|c| c.get("generalClassCard")).and_then(|v| v.as_str()).map_or(false, |s| s == "Test")
+        || match_title.to_lowercase().contains("test")
+        || comp.get("limitedOvers").and_then(|v| v.as_bool()).map_or(false, |b| !b);
+
     let limited_overs = comp.get("limitedOvers").and_then(|v| v.as_f64()).unwrap_or(50.0) as f32;
 
     // Check if team 1 is chasing
@@ -116,10 +120,14 @@ pub fn parse_match_detail(value: &serde_json::Value, series_id: &str, match_id: 
             if team1.runs < t {
                 let runs = t - team1.runs;
                 runs_needed = Some(runs);
-                rrr = Some(calculate_rrr(runs, limited_overs, team1.overs));
+                if !is_test {
+                    rrr = Some(calculate_rrr(runs, limited_overs, team1.overs));
+                }
             } else {
                 runs_needed = Some(0);
-                rrr = Some(0.0);
+                if !is_test {
+                    rrr = Some(0.0);
+                }
             }
         }
     } else if batting_team == 2 {
@@ -128,10 +136,14 @@ pub fn parse_match_detail(value: &serde_json::Value, series_id: &str, match_id: 
             if team2.runs < t {
                 let runs = t - team2.runs;
                 runs_needed = Some(runs);
-                rrr = Some(calculate_rrr(runs, limited_overs, team2.overs));
+                if !is_test {
+                    rrr = Some(calculate_rrr(runs, limited_overs, team2.overs));
+                }
             } else {
                 runs_needed = Some(0);
-                rrr = Some(0.0);
+                if !is_test {
+                    rrr = Some(0.0);
+                }
             }
         }
     }
@@ -681,6 +693,57 @@ mod tests {
             "over": { "overs": 14.2 }
         });
         assert_eq!(extract_score_str(&json), "IND 145/3 (14.2 ov)");
+    }
+
+    #[test]
+    fn test_parse_match_detail() {
+        let json = serde_json::json!({
+            "header": {
+                "name": "Sri Lanka v India",
+                "description": "1st Test, India tour of Sri Lanka at Galle, Aug 15-19 2026",
+                "competitions": [{
+                    "status": {
+                        "type": {
+                            "state": "in",
+                            "detail": "Live"
+                        }
+                    },
+                    "competitors": [
+                        {
+                            "team": { "id": "8", "displayName": "Sri Lanka", "abbreviation": "SL" },
+                            "score": "84/4",
+                            "linescores": [{
+                                "isCurrent": true,
+                                "runs": 84,
+                                "wickets": 4,
+                                "overs": 34.0,
+                                "isBatting": true,
+                                "target": 372
+                            }]
+                        },
+                        {
+                            "team": { "id": "6", "displayName": "India", "abbreviation": "IND" },
+                            "score": "462 & 193",
+                            "linescores": [{
+                                "isCurrent": false,
+                                "runs": 193,
+                                "wickets": 10,
+                                "overs": 48.5,
+                                "isBatting": false
+                            }]
+                        }
+                    ]
+                }]
+            }
+        });
+
+        let score = parse_match_detail(&json, "24567", "1544001").expect("should parse");
+        assert_eq!(score.match_id, "1544001");
+        assert_eq!(score.team1.abbreviation, "SL");
+        assert_eq!(score.team1.runs, 84);
+        assert_eq!(score.target, Some(372));
+        assert_eq!(score.runs_needed, Some(288));
+        assert_eq!(score.rrr, None); // Test match should not have RRR
     }
 }
 
