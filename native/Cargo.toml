@@ -1,0 +1,24 @@
+[package]
+name = "sportspulse"
+version = "0.1.0"
+edition = "2021"
+description = "SportsPulse native Win32 scoreboard (windows-rs rewrite)"
+
+[[bin]]
+name = "sportspulse"
+path = "src/main.rs"
+
+[dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true

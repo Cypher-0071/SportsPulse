@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+/native/target
+Cargo.lock.orig
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
