@@ -1,5 +1,5 @@
 //! SportsPulse — native Win32 rewrite (windows-rs)
-//! M0: window class, message pump, Tokio↔UI bridge heartbeat.
+//! M1: scoreboard window with Direct2D/DirectWrite rendering (static sample).
 
 #![cfg(windows)]
 #![allow(non_snake_case)]
@@ -8,16 +8,19 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::Graphics::Gdi::HBRUSH;
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Graphics::Gdi::{HBRUSH, InvalidateRect, UpdateWindow, ValidateRect};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, LoadCursorW,
     PostMessageW, PostQuitMessage, RegisterClassExW, SetWindowTextW, ShowWindow,
-    TranslateMessage, DestroyWindow, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HCURSOR, HMENU,
-    IDC_ARROW, MSG, SW_SHOW, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_DESTROY, WNDCLASSEXW,
-    WS_OVERLAPPEDWINDOW,
+    TranslateMessage, DestroyWindow, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GetWindowLongPtrW,
+    HCURSOR, HMENU, IDC_ARROW, MSG, SW_SHOW, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_DESTROY,
+    WM_PAINT, WM_SIZE, WNDCLASSEXW, WS_OVERLAPPEDWINDOW, GWLP_USERDATA, SetWindowLongPtrW,
 };
+
+mod render;
+use render::{Renderer, SAMPLE};
 
 const WM_APP_TICK: u32 = WM_APP + 1;
 const CLASS_NAME: PCWSTR = PCWSTR::from_raw(class_name_wide().as_ptr());
@@ -45,10 +48,30 @@ fn wide(s: &str) -> Vec<u16> {
 
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
+        WM_PAINT => {
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Renderer;
+            if !ptr.is_null() {
+                let _ = (*ptr).draw(&SAMPLE);
+            }
+            let _ = ValidateRect(hwnd, None);
+            LRESULT(0)
+        }
+        WM_SIZE => {
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Renderer;
+            if !ptr.is_null() {
+                let w = (lparam.0 & 0xFFFF) as u32;
+                let h = ((lparam.0 >> 16) & 0xFFFF) as u32;
+                if w > 0 && h > 0 {
+                    let _ = (*ptr).resize(w, h);
+                    let _ = (*ptr).draw(&SAMPLE);
+                }
+            }
+            LRESULT(0)
+        }
         WM_APP_TICK => {
             let n = TICKS.load(Ordering::Relaxed);
-            let title = wide(&format!("SportsPulse Native [M0] — engine tick {n}"));
-            SetWindowTextW(hwnd, PCWSTR(title.as_ptr()));
+            let title = wide(&format!("SportsPulse Native [M1] — tick {n}"));
+            let _ = SetWindowTextW(hwnd, PCWSTR(title.as_ptr()));
             LRESULT(0)
         }
         WM_CLOSE => {
@@ -81,12 +104,7 @@ async fn engine_loop() {
         unsafe {
             let h = HMAIN.load(Ordering::Relaxed);
             if h != 0 {
-                let _ = PostMessageW(
-                    HWND(h as *mut _),
-                    WM_APP_TICK,
-                    WPARAM(0),
-                    LPARAM(0),
-                );
+                let _ = PostMessageW(HWND(h as *mut _), WM_APP_TICK, WPARAM(0), LPARAM(0));
             }
         }
     }
@@ -102,13 +120,13 @@ fn main() {
             lpfnWndProc: Some(wnd_proc),
             hInstance: hinstance.into(),
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or(HCURSOR::default()),
-            hbrBackground: HBRUSH((6) as *mut _), // COLOR_WINDOW + 1
+            hbrBackground: HBRUSH(std::ptr::null_mut()),
             lpszClassName: CLASS_NAME,
             ..Default::default()
         };
         RegisterClassExW(&wc);
 
-        let title = wide("SportsPulse Native [M0]");
+        let title = wide("SportsPulse Native [M1]");
         let hwnd = CreateWindowExW(
             WINDOW_EX_STYLE(0),
             CLASS_NAME,
@@ -116,8 +134,8 @@ fn main() {
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            420,
-            180,
+            356,
+            146,
             None,
             HMENU::default(),
             hinstance,
@@ -125,8 +143,13 @@ fn main() {
         )
         .expect("create window");
 
+        let renderer = Box::new(Renderer::new(hwnd, 340, 110).expect("d2d renderer"));
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(renderer) as isize);
+
         HMAIN.store(hwnd.0 as usize, Ordering::Release);
         let _ = ShowWindow(hwnd, SW_SHOW);
+        let _ = InvalidateRect(hwnd, None, false);
+        let _ = UpdateWindow(hwnd);
 
         let engine = spawn_engine();
 
@@ -136,11 +159,12 @@ fn main() {
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             } else {
-                break; // WM_QUIT or error
+                break;
             }
         }
 
         HMAIN.store(0, Ordering::Release);
         drop(engine);
+        let _ = RECT::default();
     }
 }
