@@ -1,7 +1,7 @@
 use std::sync::{Arc, RwLock};
 use super::models::{MatchScore, MatchEvent};
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ScoreCache {
     pub current_score: Arc<RwLock<Option<MatchScore>>>,
     pub latest_event: Arc<RwLock<Option<MatchEvent>>>,
@@ -41,5 +41,10 @@ impl ScoreCache {
         } else {
             None
         }
+    }
+
+    pub fn clear(&self) {
+        self.set(None);
+        self.set_latest_event(None);
     }
 }

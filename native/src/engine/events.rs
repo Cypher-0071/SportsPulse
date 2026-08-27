@@ -1,11 +1,13 @@
-#[derive(Debug, Clone)]
+use super::models::{MatchEvent, MatchScore};
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum AppEvent {
-    ScoreChanged(Box<crate::engine::models::MatchScore>),
-    MatchEvent(Box<crate::engine::models::MatchEvent>),
+    ScoreChanged(Box<MatchScore>),
+    MatchEvent(Box<MatchEvent>),
     MatchesDiscovered(Vec<DiscoveredMatch>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DiscoveredMatch {
     pub sport: String,
     pub series_id: String,

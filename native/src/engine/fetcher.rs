@@ -247,6 +247,9 @@ pub async fn start_polling(
             }
         } else {
             cache.set(None);
+            last_tracked_match_id = None;
+            last_completed_match_id = None;
+            last_ball_id = None;
             sleep_duration = Duration::from_secs(30); // Re-check scoreboard every 30s for new live matches
         }
 

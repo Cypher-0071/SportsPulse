@@ -9,7 +9,7 @@ pub enum MatchStatus {
     Completed,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TeamScore {
     pub id: String,
     pub name: String,
@@ -28,7 +28,7 @@ pub enum SportType {
     Soccer,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MatchScore {
     pub match_id: String,
     pub series_id: String,
@@ -46,14 +46,14 @@ pub struct MatchScore {
     pub soccer_clock: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum MatchEventType {
     Wicket,
     Boundary,
     Win,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MatchEvent {
     pub event_type: MatchEventType,
     pub title: String,

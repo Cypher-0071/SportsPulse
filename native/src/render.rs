@@ -1,26 +1,56 @@
-//! M1: Direct2D + DirectWrite scoreboard renderer (static sample data).
+//! SportsPulse — Win11 Dark Theme Direct2D/DirectWrite Layered Scoreboard Renderer.
+//! Pixel flow: D2D -> WIC bitmap -> CopyPixels -> DIB -> UpdateLayeredWindow.
+//! Windows 11 Dark Theme: SOLID opaque #202020 background, #2D2D2D surfaces, Segoe UI Variable.
+
+#![allow(dead_code)]
 
 use windows::core::*;
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{COLORREF, HWND, POINT, SIZE};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
-    D2D_RECT_F, D2D_SIZE_U,
+    D2D_POINT_2F, D2D_RECT_F,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateFactory, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-    D2D1_FEATURE_LEVEL_DEFAULT, D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS_NONE,
-    D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT,
-    D2D1_RENDER_TARGET_USAGE_NONE, D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE, ID2D1Factory,
-    ID2D1HwndRenderTarget, ID2D1SolidColorBrush,
+    D2D1CreateFactory, D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_ELLIPSE,
+    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_FEATURE_LEVEL_DEFAULT,
+    D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+    D2D1_ROUNDED_RECT, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
+    ID2D1Factory, ID2D1RenderTarget, ID2D1SolidColorBrush,
 };
 use windows::Win32::Graphics::DirectWrite::{
-    DWriteCreateFactory, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_BOLD,
-    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STRETCH_NORMAL,
-    DWRITE_FONT_STYLE_NORMAL, DWRITE_MEASURING_MODE_NATURAL,
-    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
-    DWRITE_WORD_WRAPPING_NO_WRAP, IDWriteFactory, IDWriteTextFormat,
+    DWriteCreateFactory, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STYLE_NORMAL,
+    DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL,
+    DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_FONT_STRETCH_NORMAL,
+    DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+    DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
+    DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_WORD_WRAPPING_NO_WRAP,
+    IDWriteFactory, IDWriteTextFormat,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+use windows::Win32::Graphics::Gdi::{
+    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetWindowDC, ReleaseDC,
+    SelectObject, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, BI_RGB,
+    DIB_RGB_COLORS, HBITMAP, HDC, AC_SRC_ALPHA, AC_SRC_OVER,
+};
+use windows::Win32::Graphics::Imaging::{
+    CLSID_WICImagingFactory, GUID_WICPixelFormat32bppPBGRA, IWICBitmap,
+    IWICImagingFactory, WICBitmapCacheOnDemand,
+};
+use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA};
+
+use crate::engine::models::{MatchScore, MatchStatus, SportType};
+
+pub fn dbglog(msg: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("C:\\sp_bench\\sp_debug.log")
+    {
+        let _ = writeln!(f, "{msg}");
+    }
+}
 
 pub struct SampleScore {
     pub title: &'static str,
@@ -42,72 +72,149 @@ pub const SAMPLE: SampleScore = SampleScore {
     info: "42.3 ov · CRR 5.83",
 };
 
-fn color(r: f32, g: f32, b: f32, a: f32) -> D2D1_COLOR_F {
+#[inline]
+pub fn color(r: f32, g: f32, b: f32, a: f32) -> D2D1_COLOR_F {
     D2D1_COLOR_F { r, g, b, a }
 }
 
-pub struct Renderer {
-    rt: ID2D1HwndRenderTarget,
-    bg: ID2D1SolidColorBrush,
-    white: ID2D1SolidColorBrush,
-    dim: ID2D1SolidColorBrush,
-    accent: ID2D1SolidColorBrush,
-    fmt_title: Fmt,
-    fmt_score: Fmt,
-    fmt_status: Fmt,
-    fmt_info: Fmt,
-}
-
-struct Fmt {
-    fmt: IDWriteTextFormat,
+pub struct Fmt {
+    pub fmt: IDWriteTextFormat,
 }
 
 impl Fmt {
-    unsafe fn text(&self, rt: &ID2D1HwndRenderTarget, s: &str, rect: &D2D_RECT_F, brush: &ID2D1SolidColorBrush) {
+    pub unsafe fn text(
+        &self,
+        rt: &ID2D1RenderTarget,
+        s: &str,
+        rect: &D2D_RECT_F,
+        brush: &ID2D1SolidColorBrush,
+    ) {
         let wide: Vec<u16> = s.encode_utf16().collect();
         rt.DrawText(
             &wide,
             &self.fmt,
             rect,
             brush,
-            D2D1_DRAW_TEXT_OPTIONS_NONE,
+            D2D1_DRAW_TEXT_OPTIONS_CLIP,
             DWRITE_MEASURING_MODE_NATURAL,
         );
     }
+}
+
+pub struct Brushes {
+    pub bg: ID2D1SolidColorBrush,
+    pub card_surface: ID2D1SolidColorBrush,
+    pub border: ID2D1SolidColorBrush,
+    pub white: ID2D1SolidColorBrush,
+    pub dim: ID2D1SolidColorBrush,
+    pub subtle: ID2D1SolidColorBrush,
+    pub green_accent: ID2D1SolidColorBrush,
+    pub green_badge_bg: ID2D1SolidColorBrush,
+    pub red_accent: ID2D1SolidColorBrush,
+    pub red_badge_bg: ID2D1SolidColorBrush,
+    pub amber_accent: ID2D1SolidColorBrush,
+    pub amber_badge_bg: ID2D1SolidColorBrush,
+    pub blue_accent: ID2D1SolidColorBrush,
+    pub blue_badge_bg: ID2D1SolidColorBrush,
+}
+
+pub struct Formats {
+    pub title: Fmt,
+    pub team_name: Fmt,
+    pub team_name_right: Fmt,
+    pub score_large: Fmt,
+    pub score_medium: Fmt,
+    pub score_center: Fmt,
+    pub overs: Fmt,
+    pub overs_right: Fmt,
+    pub badge: Fmt,
+    pub info: Fmt,
+    pub center_dim: Fmt,
+    pub no_match_title: Fmt,
+    pub no_match_sub: Fmt,
+}
+
+pub struct Renderer {
+    hwnd: HWND,
+    wic: IWICBitmap,
+    rt: ID2D1RenderTarget,
+    mem_dc: HDC,
+    hbmp: HBITMAP,
+    bits: *mut core::ffi::c_void,
+    w: i32,
+    h: i32,
+    brushes: Brushes,
+    formats: Formats,
 }
 
 impl Renderer {
     pub unsafe fn new(hwnd: HWND, w: u32, h: u32) -> Result<Self> {
         let factory: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
         let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
+        let wicf: IWICImagingFactory =
+            CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
+
+        let wic = wicf.CreateBitmap(
+            w,
+            h,
+            &GUID_WICPixelFormat32bppPBGRA,
+            WICBitmapCacheOnDemand,
+        )?;
 
         let props = D2D1_RENDER_TARGET_PROPERTIES {
-            r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
             pixelFormat: D2D1_PIXEL_FORMAT {
                 format: DXGI_FORMAT_B8G8R8A8_UNORM,
                 alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
             },
             dpiX: 0.0,
             dpiY: 0.0,
-            usage: D2D1_RENDER_TARGET_USAGE_NONE,
+            usage: windows::Win32::Graphics::Direct2D::D2D1_RENDER_TARGET_USAGE_NONE,
             minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
         };
-        let hwnd_props = D2D1_HWND_RENDER_TARGET_PROPERTIES {
-            hwnd,
-            pixelSize: D2D_SIZE_U { width: w, height: h },
-            presentOptions: D2D1_PRESENT_OPTIONS_NONE,
+        let rt = factory.CreateWicBitmapRenderTarget(&wic, &props)?;
+        rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+
+        let screen_dc = GetWindowDC(None);
+        let mem_dc = CreateCompatibleDC(screen_dc);
+        let _ = ReleaseDC(None, screen_dc);
+
+        let mut bmi = BITMAPINFO::default();
+        bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+        bmi.bmiHeader.biWidth = w as i32;
+        bmi.bmiHeader.biHeight = -(h as i32);
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB.0;
+
+        let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
+        let hbmp = CreateDIBSection(mem_dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)?;
+        SelectObject(mem_dc, hbmp);
+
+        // ============================================================
+        // WINDOWS 11 DARK THEME — ALL BACKGROUNDS FULLY OPAQUE (a=1.0)
+        // Matches the solid dark look of Win11 Settings, File Explorer
+        // ============================================================
+        let brushes = Brushes {
+            bg:           rt.CreateSolidColorBrush(&color(0.125, 0.125, 0.125, 1.0), None)?,  // #202020 SOLID
+            card_surface: rt.CreateSolidColorBrush(&color(0.176, 0.176, 0.176, 1.0), None)?,  // #2D2D2D SOLID
+            border:       rt.CreateSolidColorBrush(&color(0.235, 0.235, 0.235, 1.0), None)?,  // #3C3C3C SOLID
+            white:        rt.CreateSolidColorBrush(&color(1.0, 1.0, 1.0, 1.0), None)?,        // #FFFFFF
+            dim:          rt.CreateSolidColorBrush(&color(0.60, 0.60, 0.60, 1.0), None)?,     // #999999
+            subtle:       rt.CreateSolidColorBrush(&color(0.40, 0.40, 0.40, 1.0), None)?,     // #666666
+            green_accent:   rt.CreateSolidColorBrush(&color(0.133, 0.773, 0.369, 1.0), None)?, // #22C55E
+            green_badge_bg: rt.CreateSolidColorBrush(&color(0.055, 0.220, 0.110, 1.0), None)?, // #0E3820 SOLID
+            red_accent:     rt.CreateSolidColorBrush(&color(0.973, 0.294, 0.333, 1.0), None)?, // #F84B55
+            red_badge_bg:   rt.CreateSolidColorBrush(&color(0.302, 0.098, 0.098, 1.0), None)?, // #4D1919 SOLID
+            amber_accent:   rt.CreateSolidColorBrush(&color(0.961, 0.620, 0.043, 1.0), None)?, // #F59E0B
+            amber_badge_bg: rt.CreateSolidColorBrush(&color(0.310, 0.180, 0.020, 1.0), None)?, // #4F2E05 SOLID
+            blue_accent:    rt.CreateSolidColorBrush(&color(0.220, 0.741, 0.973, 1.0), None)?, // #38BDF8
+            blue_badge_bg:  rt.CreateSolidColorBrush(&color(0.020, 0.180, 0.290, 1.0), None)?, // #052E4A SOLID
         };
-        let rt = factory.CreateHwndRenderTarget(&props, &hwnd_props)?;
-        rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
 
-        let bg = rt.CreateSolidColorBrush(&color(0.055, 0.063, 0.082, 1.0), None)?;
-        let white = rt.CreateSolidColorBrush(&color(0.96, 0.97, 0.98, 1.0), None)?;
-        let dim = rt.CreateSolidColorBrush(&color(0.55, 0.58, 0.62, 1.0), None)?;
-        let accent = rt.CreateSolidColorBrush(&color(0.16, 0.85, 0.45, 1.0), None)?;
-
-        let mk = |size: f32, weight: DWRITE_FONT_WEIGHT, center: bool| -> Result<Fmt> {
+        let mk = |size: f32, weight: DWRITE_FONT_WEIGHT, align: DWRITE_TEXT_ALIGNMENT| -> Result<Fmt> {
             let fmt = dwrite.CreateTextFormat(
-                w!("Segoe UI"),
+                w!("Segoe UI Variable Display"),
                 None,
                 weight,
                 DWRITE_FONT_STYLE_NORMAL,
@@ -116,52 +223,376 @@ impl Renderer {
                 w!("en-us"),
             )?;
             fmt.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
-            if center {
-                fmt.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
-                fmt.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
-            } else {
-                fmt.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
-                fmt.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
-            }
+            fmt.SetTextAlignment(align)?;
+            fmt.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
             Ok(Fmt { fmt })
         };
 
+        // Larger fonts for a spacious, modern look
+        let formats = Formats {
+            title:          mk(14.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING)?,
+            team_name:      mk(18.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING)?,
+            team_name_right:mk(18.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_TRAILING)?,
+            score_large:    mk(28.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING)?,
+            score_medium:   mk(22.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING)?,
+            score_center:   mk(28.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
+            overs:          mk(14.0, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_TEXT_ALIGNMENT_LEADING)?,
+            overs_right:    mk(14.0, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_TEXT_ALIGNMENT_TRAILING)?,
+            badge:          mk(12.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
+            info:           mk(13.0, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER)?,
+            center_dim:     mk(14.0, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_TEXT_ALIGNMENT_CENTER)?,
+            no_match_title: mk(20.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
+            no_match_sub:   mk(14.0, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER)?,
+        };
+
         Ok(Self {
-            bg,
-            white,
-            dim,
-            accent,
-            fmt_title: mk(12.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, true)?,
-            fmt_score: mk(26.0, DWRITE_FONT_WEIGHT_BOLD, false)?,
-            fmt_status: mk(11.0, DWRITE_FONT_WEIGHT_BOLD, true)?,
-            fmt_info: mk(12.0, DWRITE_FONT_WEIGHT_NORMAL, true)?,
+            hwnd,
+            wic,
             rt,
+            mem_dc,
+            hbmp,
+            bits,
+            w: w as i32,
+            h: h as i32,
+            brushes,
+            formats,
         })
     }
 
-    pub unsafe fn resize(&self, w: u32, h: u32) -> Result<()> {
-        self.rt.Resize(&D2D_SIZE_U { width: w, height: h })
+    /// Present dynamic `Option<MatchScore>` with cricket/soccer layout and Win11 theme.
+    pub unsafe fn present(&self, pos: &POINT, score: &Option<MatchScore>) -> Result<()> {
+        let (w, h) = (self.w as f32, self.h as f32);
+        let full = D2D_RECT_F { left: 0.0, top: 0.0, right: w, bottom: h };
+
+        self.rt.BeginDraw();
+        self.rt.Clear(None);
+
+        // Win11 Dark Theme SOLID background card (8px rounded corners)
+        let rr = D2D1_ROUNDED_RECT { rect: full, radiusX: 8.0, radiusY: 8.0 };
+        self.rt.FillRoundedRectangle(&rr, &self.brushes.bg);
+        self.rt.DrawRoundedRectangle(&rr, &self.brushes.border, 1.0, None);
+
+        match score {
+            Some(score) => {
+                match score.status {
+                    MatchStatus::NoMatch => {
+                        self.render_no_match(w, h);
+                    }
+                    _ => {
+                        match score.sport {
+                            SportType::Cricket => self.render_cricket(w, h, score),
+                            SportType::Soccer => self.render_soccer(w, h, score),
+                        }
+                    }
+                }
+            }
+            None => {
+                self.render_no_match(w, h);
+            }
+        }
+
+        if let Err(e) = self.rt.EndDraw(None, None) {
+            dbglog(&format!("EndDraw FAILED: {e}"));
+            return Err(e);
+        }
+
+        self.flush_to_layered_window(pos)
     }
 
-    pub unsafe fn draw(&self, s: &SampleScore) -> Result<()> {
-        let size = self.rt.GetSize();
-        let w = size.width;
-        let h = size.height;
-        let full = D2D_RECT_F { left: 0.0, top: 0.0, right: w, bottom: h };
-        self.rt.BeginDraw();
-        self.rt.FillRectangle(&full, &self.bg);
+    unsafe fn render_cricket(&self, w: f32, h: f32, score: &MatchScore) {
+        // 1. Top bar: Title + Status Badge
+        let title_rect = D2D_RECT_F { left: 20.0, top: 10.0, right: w - 90.0, bottom: 34.0 };
+        let display_title = if score.match_title.is_empty() {
+            format!("{} vs {}", score.team1.abbreviation, score.team2.abbreviation)
+        } else {
+            score.match_title.clone()
+        };
+        self.formats.title.text(&self.rt, &display_title, &title_rect, &self.brushes.dim);
 
-        self.fmt_title.text(&self.rt, s.title, &D2D_RECT_F { left: 0.0, top: 4.0, right: w, bottom: 22.0 }, &self.dim);
+        self.render_status_badge(w, score.status, None);
 
+        // 2. Middle section: Teams & Scores
         let half = w / 2.0;
-        let t1 = format!("{} {}", s.t1_abbr, s.t1_score);
-        let t2 = format!("{} {}", s.t2_abbr, s.t2_score);
-        self.fmt_score.text(&self.rt, &t1, &D2D_RECT_F { left: 12.0, top: 30.0, right: half - 36.0, bottom: 68.0 }, &self.white);
-        self.fmt_score.text(&self.rt, &t2, &D2D_RECT_F { left: half + 36.0, top: 30.0, right: w - 12.0, bottom: 68.0 }, &self.white);
 
-        self.fmt_status.text(&self.rt, s.status, &D2D_RECT_F { left: half - 30.0, top: 38.0, right: half + 30.0, bottom: 58.0 }, &self.accent);
-        self.fmt_info.text(&self.rt, s.info, &D2D_RECT_F { left: 0.0, top: h - 24.0, right: w, bottom: h - 4.0 }, &self.dim);
+        // Team 1 column (Left)
+        let t1_batting = score.batting_team == 1 || score.team1.is_batting;
+        let t1_name = if score.team1.abbreviation.is_empty() {
+            &score.team1.name
+        } else {
+            &score.team1.abbreviation
+        };
 
-        self.rt.EndDraw(None, None)
+        let t1_name_rect = D2D_RECT_F { left: 34.0, top: 36.0, right: half - 12.0, bottom: 58.0 };
+        if t1_batting {
+            let dot = D2D1_ELLIPSE {
+                point: D2D_POINT_2F { x: 22.0, y: 47.0 },
+                radiusX: 5.0,
+                radiusY: 5.0,
+            };
+            self.rt.FillEllipse(&dot, &self.brushes.green_accent);
+        }
+        self.formats.team_name.text(&self.rt, t1_name, &t1_name_rect, if t1_batting { &self.brushes.white } else { &self.brushes.dim });
+
+        let t1_score_str = if score.team1.score.is_empty() {
+            if score.team1.runs > 0 || score.team1.wickets > 0 {
+                format!("{}/{}", score.team1.runs, score.team1.wickets)
+            } else {
+                "-".to_string()
+            }
+        } else {
+            score.team1.score.clone()
+        };
+        self.formats.score_large.text(
+            &self.rt,
+            &t1_score_str,
+            &D2D_RECT_F { left: 20.0, top: 60.0, right: half - 10.0, bottom: 95.0 },
+            &self.brushes.white,
+        );
+
+        if score.team1.overs > 0.0 {
+            let overs_str = format!("({:.1} ov)", score.team1.overs);
+            self.formats.overs.text(
+                &self.rt,
+                &overs_str,
+                &D2D_RECT_F { left: 20.0, top: 96.0, right: half - 10.0, bottom: 114.0 },
+                &self.brushes.dim,
+            );
+        }
+
+        // Center "vs" divider
+        self.formats.center_dim.text(
+            &self.rt,
+            "vs",
+            &D2D_RECT_F { left: half - 18.0, top: 60.0, right: half + 18.0, bottom: 90.0 },
+            &self.brushes.subtle,
+        );
+
+        // Team 2 column (Right)
+        let t2_batting = score.batting_team == 2 || score.team2.is_batting;
+        let t2_name = if score.team2.abbreviation.is_empty() {
+            &score.team2.name
+        } else {
+            &score.team2.abbreviation
+        };
+
+        let t2_name_rect = D2D_RECT_F { left: half + 34.0, top: 36.0, right: w - 20.0, bottom: 58.0 };
+        if t2_batting {
+            let dot = D2D1_ELLIPSE {
+                point: D2D_POINT_2F { x: half + 22.0, y: 47.0 },
+                radiusX: 5.0,
+                radiusY: 5.0,
+            };
+            self.rt.FillEllipse(&dot, &self.brushes.green_accent);
+        }
+        self.formats.team_name.text(&self.rt, t2_name, &t2_name_rect, if t2_batting { &self.brushes.white } else { &self.brushes.dim });
+
+        let t2_score_str = if score.team2.score.is_empty() {
+            if score.team2.runs > 0 || score.team2.wickets > 0 {
+                format!("{}/{}", score.team2.runs, score.team2.wickets)
+            } else {
+                "-".to_string()
+            }
+        } else {
+            score.team2.score.clone()
+        };
+        self.formats.score_large.text(
+            &self.rt,
+            &t2_score_str,
+            &D2D_RECT_F { left: half + 20.0, top: 60.0, right: w - 20.0, bottom: 95.0 },
+            &self.brushes.white,
+        );
+
+        if score.team2.overs > 0.0 {
+            let overs_str = format!("({:.1} ov)", score.team2.overs);
+            self.formats.overs.text(
+                &self.rt,
+                &overs_str,
+                &D2D_RECT_F { left: half + 20.0, top: 96.0, right: w - 20.0, bottom: 114.0 },
+                &self.brushes.dim,
+            );
+        }
+
+        // 3. Bottom Info Bar: CRR, RRR, Target, Runs Needed
+        let info_rect = D2D_RECT_F { left: 16.0, top: h - 36.0, right: w - 16.0, bottom: h - 10.0 };
+        let info_rr = D2D1_ROUNDED_RECT { rect: info_rect, radiusX: 6.0, radiusY: 6.0 };
+        self.rt.FillRoundedRectangle(&info_rr, &self.brushes.card_surface);
+
+        let mut info_parts = Vec::new();
+        if score.crr > 0.0 {
+            info_parts.push(format!("CRR: {:.2}", score.crr));
+        }
+        if let Some(rrr) = score.rrr {
+            if rrr > 0.0 {
+                info_parts.push(format!("RRR: {:.2}", rrr));
+            }
+        }
+        if let Some(needed) = score.runs_needed {
+            info_parts.push(format!("Need: {}", needed));
+        } else if let Some(target) = score.target {
+            info_parts.push(format!("Target: {}", target));
+        }
+
+        let info_str = if info_parts.is_empty() {
+            match score.status {
+                MatchStatus::Live => "Live match in progress".to_string(),
+                MatchStatus::Break => "Innings Break".to_string(),
+                MatchStatus::Completed => "Match Completed".to_string(),
+                MatchStatus::Scheduled => "Match Scheduled".to_string(),
+                MatchStatus::NoMatch => "".to_string(),
+            }
+        } else {
+            info_parts.join("   ·   ")
+        };
+
+        self.formats.info.text(&self.rt, &info_str, &info_rect, &self.brushes.dim);
+    }
+
+    unsafe fn render_soccer(&self, w: f32, h: f32, score: &MatchScore) {
+        // 1. Top bar: Title + Clock Badge
+        let title_rect = D2D_RECT_F { left: 20.0, top: 10.0, right: w - 90.0, bottom: 34.0 };
+        self.formats.title.text(&self.rt, &score.match_title, &title_rect, &self.brushes.dim);
+
+        let clock_label = score.soccer_clock.as_deref().unwrap_or("FT");
+        self.render_status_badge(w, score.status, Some(clock_label));
+
+        // 2. Middle Section: Teams & Scores
+        let half = w / 2.0;
+
+        let t1_name = if score.team1.abbreviation.is_empty() {
+            &score.team1.name
+        } else {
+            &score.team1.abbreviation
+        };
+        self.formats.team_name.text(
+            &self.rt,
+            t1_name,
+            &D2D_RECT_F { left: 24.0, top: 40.0, right: half - 55.0, bottom: 64.0 },
+            &self.brushes.white,
+        );
+
+        let t2_name = if score.team2.abbreviation.is_empty() {
+            &score.team2.name
+        } else {
+            &score.team2.abbreviation
+        };
+        self.formats.team_name_right.text(
+            &self.rt,
+            t2_name,
+            &D2D_RECT_F { left: half + 55.0, top: 40.0, right: w - 24.0, bottom: 64.0 },
+            &self.brushes.white,
+        );
+
+        let score_pair = format!("{}  —  {}", score.team1.runs, score.team2.runs);
+        self.formats.score_center.text(
+            &self.rt,
+            &score_pair,
+            &D2D_RECT_F { left: half - 80.0, top: 58.0, right: half + 80.0, bottom: 100.0 },
+            &self.brushes.white,
+        );
+
+        // 3. Bottom Status Bar
+        let status_desc = match score.status {
+            MatchStatus::Live => "Live Match in Progress".to_string(),
+            MatchStatus::Break => "Half Time".to_string(),
+            MatchStatus::Completed => "Full Time".to_string(),
+            MatchStatus::Scheduled => "Upcoming Fixture".to_string(),
+            MatchStatus::NoMatch => "".to_string(),
+        };
+        let info_rect = D2D_RECT_F { left: 16.0, top: h - 36.0, right: w - 16.0, bottom: h - 10.0 };
+        let info_rr = D2D1_ROUNDED_RECT { rect: info_rect, radiusX: 6.0, radiusY: 6.0 };
+        self.rt.FillRoundedRectangle(&info_rr, &self.brushes.card_surface);
+        self.formats.info.text(&self.rt, &status_desc, &info_rect, &self.brushes.dim);
+    }
+
+    unsafe fn render_no_match(&self, w: f32, h: f32) {
+        self.formats.title.text(
+            &self.rt,
+            "SportsPulse",
+            &D2D_RECT_F { left: 22.0, top: 14.0, right: w - 22.0, bottom: 36.0 },
+            &self.brushes.subtle,
+        );
+
+        self.formats.no_match_title.text(
+            &self.rt,
+            "No Live Match Right Now",
+            &D2D_RECT_F { left: 22.0, top: 50.0, right: w - 22.0, bottom: 84.0 },
+            &self.brushes.white,
+        );
+
+        self.formats.no_match_sub.text(
+            &self.rt,
+            "Click to open Match Discovery & pin a fixture",
+            &D2D_RECT_F { left: 22.0, top: 88.0, right: w - 22.0, bottom: 114.0 },
+            &self.brushes.dim,
+        );
+
+        let bottom_hint = D2D_RECT_F { left: 16.0, top: h - 34.0, right: w - 16.0, bottom: h - 10.0 };
+        let hint_rr = D2D1_ROUNDED_RECT { rect: bottom_hint, radiusX: 6.0, radiusY: 6.0 };
+        self.rt.FillRoundedRectangle(&hint_rr, &self.brushes.card_surface);
+        self.formats.info.text(&self.rt, "Monitoring Indian & International feeds...", &bottom_hint, &self.brushes.subtle);
+    }
+
+    unsafe fn render_status_badge(&self, w: f32, status: MatchStatus, custom_label: Option<&str>) {
+        let badge_rect = D2D_RECT_F { left: w - 82.0, top: 10.0, right: w - 16.0, bottom: 32.0 };
+        let badge_rr = D2D1_ROUNDED_RECT { rect: badge_rect, radiusX: 5.0, radiusY: 5.0 };
+
+        let (text, bg_brush, fg_brush) = match (custom_label, status) {
+            (Some(label), _) => (label, &self.brushes.green_badge_bg, &self.brushes.green_accent),
+            (None, MatchStatus::Live) => ("● LIVE", &self.brushes.green_badge_bg, &self.brushes.green_accent),
+            (None, MatchStatus::Break) => ("BREAK", &self.brushes.amber_badge_bg, &self.brushes.amber_accent),
+            (None, MatchStatus::Scheduled) => ("UPCOMING", &self.brushes.blue_badge_bg, &self.brushes.blue_accent),
+            (None, MatchStatus::Completed) => ("FINAL", &self.brushes.card_surface, &self.brushes.dim),
+            (None, MatchStatus::NoMatch) => ("OFFLINE", &self.brushes.card_surface, &self.brushes.subtle),
+        };
+
+        self.rt.FillRoundedRectangle(&badge_rr, bg_brush);
+        self.formats.badge.text(&self.rt, text, &badge_rect, fg_brush);
+    }
+
+    unsafe fn flush_to_layered_window(&self, pos: &POINT) -> Result<()> {
+        let row = (self.w * 4) as usize;
+        let mut buf = vec![0u8; row * self.h as usize];
+        self.wic.CopyPixels(std::ptr::null(), row as u32, &mut buf)?;
+        std::ptr::copy_nonoverlapping(buf.as_ptr(), self.bits as *mut u8, buf.len());
+
+        let size = SIZE { cx: self.w, cy: self.h };
+        let blend = BLENDFUNCTION {
+            BlendOp: AC_SRC_OVER as u8,
+            BlendFlags: 0,
+            SourceConstantAlpha: 255,
+            AlphaFormat: AC_SRC_ALPHA as u8,
+        };
+        let src_pt = POINT { x: 0, y: 0 };
+        let ulw = UpdateLayeredWindow(
+            self.hwnd,
+            None,
+            Some(pos),
+            Some(&size),
+            self.mem_dc,
+            Some(&src_pt),
+            COLORREF(0),
+            Some(&blend),
+            ULW_ALPHA,
+        );
+
+        if let Err(e) = ulw {
+            dbglog(&format!("UpdateLayeredWindow error: {:?}", e));
+            return Err(e);
+        }
+
+        Ok(())
+    }
+}
+
+impl Drop for Renderer {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.hbmp.is_invalid() {
+                let _ = DeleteObject(self.hbmp);
+            }
+            if !self.mem_dc.is_invalid() {
+                let _ = DeleteDC(self.mem_dc);
+            }
+        }
     }
 }
