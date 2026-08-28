@@ -19,13 +19,13 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-    GetWindowLongPtrW, GetWindowRect, IsWindowVisible, LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassExW,
-    SendMessageW, SetForegroundWindow, SetWindowLongPtrW, ShowWindow, SystemParametersInfoW, TranslateMessage,
+    GetWindowLongPtrW, GetWindowRect, IsIconic, IsWindowVisible, LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassExW,
+    SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW, TranslateMessage,
     CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HCURSOR, HMENU, HTCAPTION, IDC_ARROW, MSG,
-    SPI_GETWORKAREA, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    SPI_GETWORKAREA, SWP_NOACTIVATE, SW_HIDE, SW_MINIMIZE, SW_RESTORE, SW_SHOW, SW_SHOWNOACTIVATE, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
     WM_APP, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MOUSEMOVE, WM_NCLBUTTONDOWN, WM_PAINT,
-    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCLBUTTONDOWN, WM_PAINT,
+    WNDCLASSEXW, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 pub mod engine;
@@ -39,7 +39,7 @@ use engine::events::{AppEvent, DiscoveredMatch};
 use engine::match_state::ActiveMatchesState;
 use render::Renderer;
 use popup::{MiniPopupWindow, POPUP_W, POPUP_H};
-use dashboard::{DashboardRenderer, DASH_W, DASH_H, HitTarget, WM_APP_SELECT_MATCH, WM_APP_UNTRACK};
+use dashboard::{DashboardRenderer, DASH_NORMAL_W, DASH_NORMAL_H, HitTarget, WM_APP_SELECT_MATCH, WM_APP_UNTRACK};
 use tray::{TrayIcon, WM_APP_TRAY, ID_TRAY_TOGGLE_SCORE, ID_TRAY_OPEN_DASHBOARD, ID_TRAY_UNTRACK_MATCH, ID_TRAY_QUIT};
 
 pub const WM_APP_SCORE_UPDATE: u32 = WM_APP + 1;
@@ -47,8 +47,8 @@ pub const WM_APP_MATCH_EVENT: u32 = WM_APP + 3;
 pub const WM_APP_MATCHES_DISCOVERED: u32 = WM_APP + 4;
 
 const CLASS_NAME: PCWSTR = w!("SPNativeMain");
-const SCORE_W: u32 = 480;
-const SCORE_H: u32 = 160;
+const SCORE_W: u32 = 540;
+const SCORE_H: u32 = 200;
 const HOTKEY_ID: i32 = 1;
 
 static HMAIN: AtomicUsize = AtomicUsize::new(0);
@@ -63,6 +63,7 @@ struct AppState {
     dash_selected_id: Option<String>,
     cache: ScoreCache,
     match_state: ActiveMatchesState,
+    dashboard_restore_rect: RECT,
 }
 
 unsafe fn work_area() -> RECT {
@@ -79,16 +80,16 @@ unsafe fn work_area() -> RECT {
 unsafe fn bottom_right_score_point() -> POINT {
     let wa = work_area();
     POINT {
-        x: wa.right - SCORE_W as i32 - 16,
-        y: wa.bottom - SCORE_H as i32 - 16,
+        x: wa.right - SCORE_W as i32 - 24,
+        y: wa.bottom - SCORE_H as i32 - 24,
     }
 }
 
 unsafe fn bottom_right_popup_point() -> POINT {
     let wa = work_area();
     POINT {
-        x: wa.right - POPUP_W as i32 - 16,
-        y: wa.bottom - SCORE_H as i32 - POPUP_H as i32 - 24,
+        x: wa.right - POPUP_W as i32 - 24,
+        y: wa.bottom - SCORE_H as i32 - POPUP_H as i32 - 32,
     }
 }
 
@@ -118,14 +119,53 @@ unsafe fn toggle_dashboard(state: &mut AppState) {
     }
     let visible = IsWindowVisible(state.dash_hwnd).as_bool();
     if visible {
-        let _ = ShowWindow(state.dash_hwnd, SW_HIDE);
+        if IsIconic(state.dash_hwnd).as_bool() {
+            let _ = ShowWindow(state.dash_hwnd, SW_RESTORE);
+            let _ = SetForegroundWindow(state.dash_hwnd);
+        } else {
+            let _ = ShowWindow(state.dash_hwnd, SW_HIDE);
+        }
     } else {
-        let pos = center_screen_point(DASH_W, DASH_H);
+        let pos = center_screen_point(DASH_NORMAL_W, DASH_NORMAL_H);
         if let Some(r) = state.dash_renderer.as_mut() {
             let _ = r.present(&pos, &state.dash_matches, &state.dash_selected_id);
         }
         let _ = ShowWindow(state.dash_hwnd, SW_SHOW);
         let _ = SetForegroundWindow(state.dash_hwnd);
+    }
+}
+
+/// Full work-area maximize for the custom-rendered dashboard. This deliberately avoids
+/// the previous down/up double-toggle and the arbitrary 40px gutter that made maximize
+/// look broken. The dashboard preserves its last normal geometry for a faithful restore.
+unsafe fn toggle_dashboard_maximize(state: &mut AppState) {
+    let hwnd = state.dash_hwnd;
+    let restore_rect = state.dashboard_restore_rect;
+    let Some(r) = state.dash_renderer.as_mut() else { return; };
+
+    if !r.is_maximized {
+        let mut current = RECT::default();
+        let _ = GetWindowRect(hwnd, &mut current);
+        state.dashboard_restore_rect = current;
+
+        let wa = work_area();
+        let width = wa.right - wa.left;
+        let height = wa.bottom - wa.top;
+        r.is_maximized = true;
+        let _ = SetWindowPos(hwnd, None, wa.left, wa.top, width, height, SWP_NOACTIVATE);
+        let _ = r.resize(width as u32, height as u32);
+        let _ = r.present(&POINT { x: wa.left, y: wa.top }, &state.dash_matches, &state.dash_selected_id);
+    } else {
+        let width = restore_rect.right - restore_rect.left;
+        let height = restore_rect.bottom - restore_rect.top;
+        r.is_maximized = false;
+        let _ = SetWindowPos(hwnd, None, restore_rect.left, restore_rect.top, width, height, SWP_NOACTIVATE);
+        let _ = r.resize(width as u32, height as u32);
+        let _ = r.present(
+            &POINT { x: restore_rect.left, y: restore_rect.top },
+            &state.dash_matches,
+            &state.dash_selected_id,
+        );
     }
 }
 
@@ -224,6 +264,18 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     let score = state.cache.get();
                     let _ = state.renderer.present(&pos, &score);
                     let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+
+                    if IsWindowVisible(state.dash_hwnd).as_bool() {
+                        let mut rect = RECT::default();
+                        let _ = GetWindowRect(state.dash_hwnd, &mut rect);
+                        if let Some(r) = state.dash_renderer.as_mut() {
+                            let _ = r.present(
+                                &POINT { x: rect.left, y: rect.top },
+                                &state.dash_matches,
+                                &state.dash_selected_id,
+                            );
+                        }
+                    }
                 }
             }
             LRESULT(0)
@@ -239,6 +291,18 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 
                 let pos = bottom_right_score_point();
                 let _ = state.renderer.present(&pos, &None);
+
+                if IsWindowVisible(state.dash_hwnd).as_bool() {
+                    let mut rect = RECT::default();
+                    let _ = GetWindowRect(state.dash_hwnd, &mut rect);
+                    if let Some(r) = state.dash_renderer.as_mut() {
+                        let _ = r.present(
+                            &POINT { x: rect.left, y: rect.top },
+                            &state.dash_matches,
+                            &state.dash_selected_id,
+                        );
+                    }
+                }
             }
             LRESULT(0)
         }
@@ -300,19 +364,12 @@ unsafe extern "system" fn dashboard_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARA
             let y = (lparam.0 >> 16) as i16 as f32;
 
             if let Some(state) = state_ptr.as_mut() {
-                if let Some(r) = state.dash_renderer.as_ref() {
+                if let Some(r) = state.dash_renderer.as_mut() {
                     let hit = r.hit_test(x, y, state.dash_matches.len());
-                    match hit {
-                        Some(HitTarget::TitleBar) => {
-                            let _ = ReleaseCapture();
-                            let _ = SendMessageW(hwnd, WM_NCLBUTTONDOWN, WPARAM(HTCAPTION as usize), LPARAM(0));
-                            return LRESULT(0);
-                        }
-                        Some(HitTarget::CloseButton) => {
-                            let _ = ShowWindow(hwnd, SW_HIDE);
-                            return LRESULT(0);
-                        }
-                        _ => {}
+                    if matches!(hit, Some(HitTarget::TitleBar)) {
+                        let _ = ReleaseCapture();
+                        let _ = SendMessageW(hwnd, WM_NCLBUTTONDOWN, WPARAM(HTCAPTION as usize), LPARAM(0));
+                        return LRESULT(0);
                     }
                 }
             }
@@ -325,20 +382,38 @@ unsafe extern "system" fn dashboard_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARA
 
                 if let Some(r) = state.dash_renderer.as_mut() {
                     let hit = r.hit_test(x, y, state.dash_matches.len());
-                    let (hover_idx, close_h, untrack_h) = match hit {
-                        Some(HitTarget::CloseButton) => (None, true, false),
-                        Some(HitTarget::UntrackButton) => (None, false, true),
-                        Some(HitTarget::MatchItem(idx)) => (Some(idx), false, false),
-                        _ => (None, false, false),
+                    let (hover_idx, action_idx, min_h, max_h, close_h) = match hit {
+                        Some(HitTarget::MinimizeButton) => (None, None, true, false, false),
+                        Some(HitTarget::MaximizeButton) => (None, None, false, true, false),
+                        Some(HitTarget::CloseButton) => (None, None, false, false, true),
+                        Some(HitTarget::MatchItem(idx)) => (Some(idx), None, false, false, false),
+                        Some(HitTarget::MatchAction(idx)) => (Some(idx), Some(idx), false, false, false),
+                        _ => (None, None, false, false, false),
                     };
 
-                    if r.hover_index != hover_idx || r.close_hover != close_h || r.untrack_hover != untrack_h {
-                        r.set_hover(hover_idx, close_h, untrack_h);
+                    if r.hover_index != hover_idx || r.action_hover_index != action_idx || r.min_hover != min_h || r.max_hover != max_h || r.close_hover != close_h {
+                        r.set_hover(hover_idx, action_idx, min_h, max_h, close_h);
                         let mut rect = RECT::default();
                         let _ = GetWindowRect(hwnd, &mut rect);
                         let pos = POINT { x: rect.left, y: rect.top };
                         let _ = r.present(&pos, &state.dash_matches, &state.dash_selected_id);
                     }
+                }
+            }
+            LRESULT(0)
+        }
+        WM_MOUSEWHEEL => {
+            if let Some(state) = state_ptr.as_mut() {
+                let delta = ((wparam.0 >> 16) & 0xffff) as i16;
+                if let Some(r) = state.dash_renderer.as_mut() {
+                    r.scroll_by(if delta < 0 { 1 } else { -1 }, state.dash_matches.len());
+                    let mut rect = RECT::default();
+                    let _ = GetWindowRect(hwnd, &mut rect);
+                    let _ = r.present(
+                        &POINT { x: rect.left, y: rect.top },
+                        &state.dash_matches,
+                        &state.dash_selected_id,
+                    );
                 }
             }
             LRESULT(0)
@@ -363,16 +438,29 @@ unsafe extern "system" fn dashboard_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARA
                 if let Some(r) = state.dash_renderer.as_mut() {
                     let hit = r.hit_test(x, y, state.dash_matches.len());
                     match hit {
+                        Some(HitTarget::MinimizeButton) => {
+                            let _ = ShowWindow(hwnd, SW_MINIMIZE);
+                        }
+                        Some(HitTarget::MaximizeButton) => {
+                            toggle_dashboard_maximize(state);
+                        }
                         Some(HitTarget::CloseButton) => {
                             let _ = ShowWindow(hwnd, SW_HIDE);
                         }
-                        Some(HitTarget::UntrackButton) => {
-                            let _ = PostMessageW(parent_hwnd, WM_APP_UNTRACK, WPARAM(0), LPARAM(0));
+                        Some(HitTarget::MatchAction(idx)) => {
+                            if idx < state.dash_matches.len() {
+                                let selected = state.dash_selected_id.as_ref()
+                                    .is_some_and(|id| id == &state.dash_matches[idx].match_id);
+                                if selected {
+                                    let _ = PostMessageW(parent_hwnd, WM_APP_UNTRACK, WPARAM(0), LPARAM(0));
+                                } else {
+                                    let _ = PostMessageW(parent_hwnd, WM_APP_SELECT_MATCH, WPARAM(idx), LPARAM(0));
+                                }
+                            }
                         }
                         Some(HitTarget::MatchItem(idx)) => {
                             if idx < state.dash_matches.len() {
                                 let _ = PostMessageW(parent_hwnd, WM_APP_SELECT_MATCH, WPARAM(idx), LPARAM(0));
-                                let _ = ShowWindow(hwnd, SW_HIDE);
                             }
                         }
                         _ => {}
@@ -475,7 +563,7 @@ fn main() {
         let hwnd = CreateWindowExW(
             WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
             CLASS_NAME,
-            PCWSTR::null(),
+            w!("SportsPulse"),
             WS_POPUP,
             score_pos.x,
             score_pos.y,
@@ -491,16 +579,18 @@ fn main() {
         HMAIN.store(hwnd.0 as usize, Ordering::Release);
 
         // 4. Create Dashboard Window
-        let dash_pos = center_screen_point(DASH_W, DASH_H);
+        let dash_pos = center_screen_point(DASH_NORMAL_W, DASH_NORMAL_H);
         let dash_hwnd = CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+            // The discovery dashboard is a normal taskbar application while open.
+            // The lightweight scoreboard itself remains a tray-only topmost overlay.
+            WS_EX_LAYERED | WS_EX_APPWINDOW,
             DASH_CLASS,
             PCWSTR::null(),
             WS_POPUP,
             dash_pos.x,
             dash_pos.y,
-            DASH_W as i32,
-            DASH_H as i32,
+            DASH_NORMAL_W as i32,
+            DASH_NORMAL_H as i32,
             None,
             HMENU::default(),
             hinstance,
@@ -510,7 +600,7 @@ fn main() {
 
         // 5. Create Components
         let renderer = Renderer::new(hwnd, SCORE_W, SCORE_H).expect("d2d scoreboard renderer");
-        let dash_renderer = DashboardRenderer::new(dash_hwnd, DASH_W, DASH_H).ok();
+        let dash_renderer = DashboardRenderer::new(dash_hwnd, DASH_NORMAL_W, DASH_NORMAL_H).ok();
         let popup_win = MiniPopupWindow::create().ok();
         let tray = TrayIcon::new(hwnd, "SportsPulse - Live Scores");
 
@@ -527,6 +617,12 @@ fn main() {
             dash_selected_id: None,
             cache: cache.clone(),
             match_state: match_state.clone(),
+            dashboard_restore_rect: RECT {
+                left: dash_pos.x,
+                top: dash_pos.y,
+                right: dash_pos.x + DASH_NORMAL_W as i32,
+                bottom: dash_pos.y + DASH_NORMAL_H as i32,
+            },
         });
 
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(app_state) as isize);

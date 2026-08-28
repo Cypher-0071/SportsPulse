@@ -1,6 +1,6 @@
 //! SportsPulse — Win11 Dark Theme Direct2D/DirectWrite Layered Scoreboard Renderer.
 //! Pixel flow: D2D -> WIC bitmap -> CopyPixels -> DIB -> UpdateLayeredWindow.
-//! Windows 11 Dark Theme: SOLID opaque #202020 background, #2D2D2D surfaces, Segoe UI Variable.
+//! Windows 11 Fluent Geometry: SOLID opaque #202020 background, #2D2D2D surfaces, 16px corner radius, bold typography.
 
 #![allow(dead_code)]
 
@@ -191,25 +191,22 @@ impl Renderer {
         let hbmp = CreateDIBSection(mem_dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)?;
         SelectObject(mem_dc, hbmp);
 
-        // ============================================================
-        // WINDOWS 11 DARK THEME — ALL BACKGROUNDS FULLY OPAQUE (a=1.0)
-        // Matches the solid dark look of Win11 Settings, File Explorer
-        // ============================================================
+        // Windows 11 Dark Theme — Solid opaque (a=1.0)
         let brushes = Brushes {
             bg:           rt.CreateSolidColorBrush(&color(0.125, 0.125, 0.125, 1.0), None)?,  // #202020 SOLID
             card_surface: rt.CreateSolidColorBrush(&color(0.176, 0.176, 0.176, 1.0), None)?,  // #2D2D2D SOLID
-            border:       rt.CreateSolidColorBrush(&color(0.235, 0.235, 0.235, 1.0), None)?,  // #3C3C3C SOLID
+            border:       rt.CreateSolidColorBrush(&color(0.245, 0.245, 0.245, 1.0), None)?,  // #3E3E3E SOLID
             white:        rt.CreateSolidColorBrush(&color(1.0, 1.0, 1.0, 1.0), None)?,        // #FFFFFF
-            dim:          rt.CreateSolidColorBrush(&color(0.60, 0.60, 0.60, 1.0), None)?,     // #999999
-            subtle:       rt.CreateSolidColorBrush(&color(0.40, 0.40, 0.40, 1.0), None)?,     // #666666
+            dim:          rt.CreateSolidColorBrush(&color(0.65, 0.65, 0.65, 1.0), None)?,     // #A6A6A6
+            subtle:       rt.CreateSolidColorBrush(&color(0.44, 0.44, 0.44, 1.0), None)?,     // #707070
             green_accent:   rt.CreateSolidColorBrush(&color(0.133, 0.773, 0.369, 1.0), None)?, // #22C55E
-            green_badge_bg: rt.CreateSolidColorBrush(&color(0.055, 0.220, 0.110, 1.0), None)?, // #0E3820 SOLID
+            green_badge_bg: rt.CreateSolidColorBrush(&color(0.055, 0.240, 0.110, 1.0), None)?, // #0E3B1C SOLID
             red_accent:     rt.CreateSolidColorBrush(&color(0.973, 0.294, 0.333, 1.0), None)?, // #F84B55
-            red_badge_bg:   rt.CreateSolidColorBrush(&color(0.302, 0.098, 0.098, 1.0), None)?, // #4D1919 SOLID
+            red_badge_bg:   rt.CreateSolidColorBrush(&color(0.320, 0.098, 0.098, 1.0), None)?, // #521919 SOLID
             amber_accent:   rt.CreateSolidColorBrush(&color(0.961, 0.620, 0.043, 1.0), None)?, // #F59E0B
-            amber_badge_bg: rt.CreateSolidColorBrush(&color(0.310, 0.180, 0.020, 1.0), None)?, // #4F2E05 SOLID
+            amber_badge_bg: rt.CreateSolidColorBrush(&color(0.320, 0.180, 0.020, 1.0), None)?, // #522E05 SOLID
             blue_accent:    rt.CreateSolidColorBrush(&color(0.220, 0.741, 0.973, 1.0), None)?, // #38BDF8
-            blue_badge_bg:  rt.CreateSolidColorBrush(&color(0.020, 0.180, 0.290, 1.0), None)?, // #052E4A SOLID
+            blue_badge_bg:  rt.CreateSolidColorBrush(&color(0.020, 0.190, 0.300, 1.0), None)?, // #05304D SOLID
         };
 
         let mk = |size: f32, weight: DWRITE_FONT_WEIGHT, align: DWRITE_TEXT_ALIGNMENT| -> Result<Fmt> {
@@ -228,21 +225,21 @@ impl Renderer {
             Ok(Fmt { fmt })
         };
 
-        // Larger fonts for a spacious, modern look
+        // Bold, prominent typography
         let formats = Formats {
-            title:          mk(14.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING)?,
-            team_name:      mk(18.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING)?,
-            team_name_right:mk(18.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_TRAILING)?,
-            score_large:    mk(28.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING)?,
-            score_medium:   mk(22.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING)?,
-            score_center:   mk(28.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
-            overs:          mk(14.0, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_TEXT_ALIGNMENT_LEADING)?,
-            overs_right:    mk(14.0, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_TEXT_ALIGNMENT_TRAILING)?,
-            badge:          mk(12.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
-            info:           mk(13.0, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER)?,
-            center_dim:     mk(14.0, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_TEXT_ALIGNMENT_CENTER)?,
-            no_match_title: mk(20.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
-            no_match_sub:   mk(14.0, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER)?,
+            title:          mk(15.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING)?,
+            team_name:      mk(24.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING)?,
+            team_name_right:mk(24.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_TRAILING)?,
+            score_large:    mk(38.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING)?,
+            score_medium:   mk(28.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING)?,
+            score_center:   mk(38.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
+            overs:          mk(17.0, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_TEXT_ALIGNMENT_LEADING)?,
+            overs_right:    mk(17.0, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_TEXT_ALIGNMENT_TRAILING)?,
+            badge:          mk(14.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
+            info:           mk(15.0, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER)?,
+            center_dim:     mk(17.0, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_TEXT_ALIGNMENT_CENTER)?,
+            no_match_title: mk(26.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
+            no_match_sub:   mk(16.0, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER)?,
         };
 
         Ok(Self {
@@ -267,10 +264,10 @@ impl Renderer {
         self.rt.BeginDraw();
         self.rt.Clear(None);
 
-        // Win11 Dark Theme SOLID background card (8px rounded corners)
-        let rr = D2D1_ROUNDED_RECT { rect: full, radiusX: 8.0, radiusY: 8.0 };
+        // Win11 Top-Level Window (16px rounded corners)
+        let rr = D2D1_ROUNDED_RECT { rect: full, radiusX: 16.0, radiusY: 16.0 };
         self.rt.FillRoundedRectangle(&rr, &self.brushes.bg);
-        self.rt.DrawRoundedRectangle(&rr, &self.brushes.border, 1.0, None);
+        self.rt.DrawRoundedRectangle(&rr, &self.brushes.border, 1.2, None);
 
         match score {
             Some(score) => {
@@ -301,7 +298,7 @@ impl Renderer {
 
     unsafe fn render_cricket(&self, w: f32, h: f32, score: &MatchScore) {
         // 1. Top bar: Title + Status Badge
-        let title_rect = D2D_RECT_F { left: 20.0, top: 10.0, right: w - 90.0, bottom: 34.0 };
+        let title_rect = D2D_RECT_F { left: 26.0, top: 14.0, right: w - 110.0, bottom: 40.0 };
         let display_title = if score.match_title.is_empty() {
             format!("{} vs {}", score.team1.abbreviation, score.team2.abbreviation)
         } else {
@@ -322,12 +319,12 @@ impl Renderer {
             &score.team1.abbreviation
         };
 
-        let t1_name_rect = D2D_RECT_F { left: 34.0, top: 36.0, right: half - 12.0, bottom: 58.0 };
+        let t1_name_rect = D2D_RECT_F { left: 44.0, top: 44.0, right: half - 16.0, bottom: 72.0 };
         if t1_batting {
             let dot = D2D1_ELLIPSE {
-                point: D2D_POINT_2F { x: 22.0, y: 47.0 },
-                radiusX: 5.0,
-                radiusY: 5.0,
+                point: D2D_POINT_2F { x: 30.0, y: 58.0 },
+                radiusX: 6.0,
+                radiusY: 6.0,
             };
             self.rt.FillEllipse(&dot, &self.brushes.green_accent);
         }
@@ -345,7 +342,7 @@ impl Renderer {
         self.formats.score_large.text(
             &self.rt,
             &t1_score_str,
-            &D2D_RECT_F { left: 20.0, top: 60.0, right: half - 10.0, bottom: 95.0 },
+            &D2D_RECT_F { left: 26.0, top: 74.0, right: half - 14.0, bottom: 118.0 },
             &self.brushes.white,
         );
 
@@ -354,7 +351,7 @@ impl Renderer {
             self.formats.overs.text(
                 &self.rt,
                 &overs_str,
-                &D2D_RECT_F { left: 20.0, top: 96.0, right: half - 10.0, bottom: 114.0 },
+                &D2D_RECT_F { left: 26.0, top: 118.0, right: half - 14.0, bottom: 140.0 },
                 &self.brushes.dim,
             );
         }
@@ -363,7 +360,7 @@ impl Renderer {
         self.formats.center_dim.text(
             &self.rt,
             "vs",
-            &D2D_RECT_F { left: half - 18.0, top: 60.0, right: half + 18.0, bottom: 90.0 },
+            &D2D_RECT_F { left: half - 22.0, top: 76.0, right: half + 22.0, bottom: 112.0 },
             &self.brushes.subtle,
         );
 
@@ -375,12 +372,12 @@ impl Renderer {
             &score.team2.abbreviation
         };
 
-        let t2_name_rect = D2D_RECT_F { left: half + 34.0, top: 36.0, right: w - 20.0, bottom: 58.0 };
+        let t2_name_rect = D2D_RECT_F { left: half + 44.0, top: 44.0, right: w - 26.0, bottom: 72.0 };
         if t2_batting {
             let dot = D2D1_ELLIPSE {
-                point: D2D_POINT_2F { x: half + 22.0, y: 47.0 },
-                radiusX: 5.0,
-                radiusY: 5.0,
+                point: D2D_POINT_2F { x: half + 30.0, y: 58.0 },
+                radiusX: 6.0,
+                radiusY: 6.0,
             };
             self.rt.FillEllipse(&dot, &self.brushes.green_accent);
         }
@@ -398,7 +395,7 @@ impl Renderer {
         self.formats.score_large.text(
             &self.rt,
             &t2_score_str,
-            &D2D_RECT_F { left: half + 20.0, top: 60.0, right: w - 20.0, bottom: 95.0 },
+            &D2D_RECT_F { left: half + 26.0, top: 74.0, right: w - 26.0, bottom: 118.0 },
             &self.brushes.white,
         );
 
@@ -407,14 +404,14 @@ impl Renderer {
             self.formats.overs.text(
                 &self.rt,
                 &overs_str,
-                &D2D_RECT_F { left: half + 20.0, top: 96.0, right: w - 20.0, bottom: 114.0 },
+                &D2D_RECT_F { left: half + 26.0, top: 118.0, right: w - 26.0, bottom: 140.0 },
                 &self.brushes.dim,
             );
         }
 
-        // 3. Bottom Info Bar: CRR, RRR, Target, Runs Needed
-        let info_rect = D2D_RECT_F { left: 16.0, top: h - 36.0, right: w - 16.0, bottom: h - 10.0 };
-        let info_rr = D2D1_ROUNDED_RECT { rect: info_rect, radiusX: 6.0, radiusY: 6.0 };
+        // 3. Bottom Info Bar: CRR, RRR, Target, Runs Needed (8px radius)
+        let info_rect = D2D_RECT_F { left: 20.0, top: h - 48.0, right: w - 20.0, bottom: h - 14.0 };
+        let info_rr = D2D1_ROUNDED_RECT { rect: info_rect, radiusX: 8.0, radiusY: 8.0 };
         self.rt.FillRoundedRectangle(&info_rr, &self.brushes.card_surface);
 
         let mut info_parts = Vec::new();
@@ -449,7 +446,7 @@ impl Renderer {
 
     unsafe fn render_soccer(&self, w: f32, h: f32, score: &MatchScore) {
         // 1. Top bar: Title + Clock Badge
-        let title_rect = D2D_RECT_F { left: 20.0, top: 10.0, right: w - 90.0, bottom: 34.0 };
+        let title_rect = D2D_RECT_F { left: 26.0, top: 14.0, right: w - 110.0, bottom: 40.0 };
         self.formats.title.text(&self.rt, &score.match_title, &title_rect, &self.brushes.dim);
 
         let clock_label = score.soccer_clock.as_deref().unwrap_or("FT");
@@ -466,7 +463,7 @@ impl Renderer {
         self.formats.team_name.text(
             &self.rt,
             t1_name,
-            &D2D_RECT_F { left: 24.0, top: 40.0, right: half - 55.0, bottom: 64.0 },
+            &D2D_RECT_F { left: 30.0, top: 48.0, right: half - 70.0, bottom: 76.0 },
             &self.brushes.white,
         );
 
@@ -478,7 +475,7 @@ impl Renderer {
         self.formats.team_name_right.text(
             &self.rt,
             t2_name,
-            &D2D_RECT_F { left: half + 55.0, top: 40.0, right: w - 24.0, bottom: 64.0 },
+            &D2D_RECT_F { left: half + 70.0, top: 48.0, right: w - 30.0, bottom: 76.0 },
             &self.brushes.white,
         );
 
@@ -486,11 +483,11 @@ impl Renderer {
         self.formats.score_center.text(
             &self.rt,
             &score_pair,
-            &D2D_RECT_F { left: half - 80.0, top: 58.0, right: half + 80.0, bottom: 100.0 },
+            &D2D_RECT_F { left: half - 100.0, top: 70.0, right: half + 100.0, bottom: 120.0 },
             &self.brushes.white,
         );
 
-        // 3. Bottom Status Bar
+        // 3. Bottom Status Bar (8px radius)
         let status_desc = match score.status {
             MatchStatus::Live => "Live Match in Progress".to_string(),
             MatchStatus::Break => "Half Time".to_string(),
@@ -498,43 +495,32 @@ impl Renderer {
             MatchStatus::Scheduled => "Upcoming Fixture".to_string(),
             MatchStatus::NoMatch => "".to_string(),
         };
-        let info_rect = D2D_RECT_F { left: 16.0, top: h - 36.0, right: w - 16.0, bottom: h - 10.0 };
-        let info_rr = D2D1_ROUNDED_RECT { rect: info_rect, radiusX: 6.0, radiusY: 6.0 };
+        let info_rect = D2D_RECT_F { left: 20.0, top: h - 48.0, right: w - 20.0, bottom: h - 14.0 };
+        let info_rr = D2D1_ROUNDED_RECT { rect: info_rect, radiusX: 8.0, radiusY: 8.0 };
         self.rt.FillRoundedRectangle(&info_rr, &self.brushes.card_surface);
         self.formats.info.text(&self.rt, &status_desc, &info_rect, &self.brushes.dim);
     }
 
-    unsafe fn render_no_match(&self, w: f32, h: f32) {
+    unsafe fn render_no_match(&self, w: f32, _h: f32) {
         self.formats.title.text(
             &self.rt,
             "SportsPulse",
-            &D2D_RECT_F { left: 22.0, top: 14.0, right: w - 22.0, bottom: 36.0 },
+            &D2D_RECT_F { left: 26.0, top: 16.0, right: w - 26.0, bottom: 42.0 },
             &self.brushes.subtle,
         );
 
         self.formats.no_match_title.text(
             &self.rt,
             "No Live Match Right Now",
-            &D2D_RECT_F { left: 22.0, top: 50.0, right: w - 22.0, bottom: 84.0 },
+            &D2D_RECT_F { left: 26.0, top: 82.0, right: w - 26.0, bottom: 122.0 },
             &self.brushes.white,
         );
 
-        self.formats.no_match_sub.text(
-            &self.rt,
-            "Click to open Match Discovery & pin a fixture",
-            &D2D_RECT_F { left: 22.0, top: 88.0, right: w - 22.0, bottom: 114.0 },
-            &self.brushes.dim,
-        );
-
-        let bottom_hint = D2D_RECT_F { left: 16.0, top: h - 34.0, right: w - 16.0, bottom: h - 10.0 };
-        let hint_rr = D2D1_ROUNDED_RECT { rect: bottom_hint, radiusX: 6.0, radiusY: 6.0 };
-        self.rt.FillRoundedRectangle(&hint_rr, &self.brushes.card_surface);
-        self.formats.info.text(&self.rt, "Monitoring Indian & International feeds...", &bottom_hint, &self.brushes.subtle);
     }
 
     unsafe fn render_status_badge(&self, w: f32, status: MatchStatus, custom_label: Option<&str>) {
-        let badge_rect = D2D_RECT_F { left: w - 82.0, top: 10.0, right: w - 16.0, bottom: 32.0 };
-        let badge_rr = D2D1_ROUNDED_RECT { rect: badge_rect, radiusX: 5.0, radiusY: 5.0 };
+        let badge_rect = D2D_RECT_F { left: w - 100.0, top: 14.0, right: w - 20.0, bottom: 42.0 };
+        let badge_rr = D2D1_ROUNDED_RECT { rect: badge_rect, radiusX: 8.0, radiusY: 8.0 };
 
         let (text, bg_brush, fg_brush) = match (custom_label, status) {
             (Some(label), _) => (label, &self.brushes.green_badge_bg, &self.brushes.green_accent),
