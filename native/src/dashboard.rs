@@ -91,9 +91,33 @@ pub enum HitTarget {
     MinimizeButton,
     MaximizeButton,
     CloseButton,
+    CricketTab,
+    FootballTab,
     TitleBar,
     MatchItem(usize),
     MatchAction(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DashboardSport {
+    Cricket,
+    Football,
+}
+
+impl DashboardSport {
+    fn matches(self, sport: &str) -> bool {
+        match self {
+            Self::Cricket => sport.eq_ignore_ascii_case("cricket"),
+            Self::Football => sport.eq_ignore_ascii_case("soccer") || sport.eq_ignore_ascii_case("football"),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Cricket => "cricket",
+            Self::Football => "football",
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -140,6 +164,10 @@ struct Brushes {
     action_hover_bg: ID2D1SolidColorBrush,
     action_border: ID2D1SolidColorBrush,
     action_text: ID2D1SolidColorBrush,
+    action_danger_bg: ID2D1SolidColorBrush,
+    action_danger_hover_bg: ID2D1SolidColorBrush,
+    action_danger_border: ID2D1SolidColorBrush,
+    action_danger_text: ID2D1SolidColorBrush,
     caption_btn_hover_bg: ID2D1SolidColorBrush,
     live_badge_bg: ID2D1SolidColorBrush,
     live_badge_text: ID2D1SolidColorBrush,
@@ -171,6 +199,10 @@ impl Brushes {
             action_hover_bg: rt.CreateSolidColorBrush(&color(0.220, 0.220, 0.220, 1.0), None)?,
             action_border: rt.CreateSolidColorBrush(&color(0.270, 0.270, 0.270, 1.0), None)?,
             action_text:  rt.CreateSolidColorBrush(&color(0.82, 0.82, 0.82, 1.0), None)?,
+            action_danger_bg: rt.CreateSolidColorBrush(&color(0.340, 0.082, 0.102, 1.0), None)?,
+            action_danger_hover_bg: rt.CreateSolidColorBrush(&color(0.500, 0.090, 0.122, 1.0), None)?,
+            action_danger_border: rt.CreateSolidColorBrush(&color(0.900, 0.250, 0.290, 1.0), None)?,
+            action_danger_text: rt.CreateSolidColorBrush(&color(1.000, 0.850, 0.860, 1.0), None)?,
             caption_btn_hover_bg: rt.CreateSolidColorBrush(&color(0.235, 0.235, 0.235, 1.0), None)?, // #3C3C3C
 
             live_badge_bg:   rt.CreateSolidColorBrush(&color(0.055, 0.240, 0.110, 1.0), None)?,
@@ -217,6 +249,7 @@ pub struct DashboardRenderer {
     pub close_hover: bool,
     pub is_maximized: bool,
     pub scroll_offset: usize,
+    pub active_sport: DashboardSport,
     content_height: f32,
     card_layout: Vec<(usize, D2D_RECT_F)>,
 }
@@ -295,7 +328,7 @@ impl DashboardRenderer {
             brushes,
             // Prominent, large, readable typography
             fmt_app_title: mk_font(21.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING)?,
-            fmt_eyebrow: mk_font(13.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING)?,
+            fmt_eyebrow: mk_font(16.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING)?,
             fmt_subtitle: mk_font(17.0, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_LEADING)?,
             fmt_item_title: mk_font(22.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING)?,
             fmt_item_sub: mk_font(17.0, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_LEADING)?,
@@ -311,6 +344,7 @@ impl DashboardRenderer {
             close_hover: false,
             is_maximized: false,
             scroll_offset: 0,
+            active_sport: DashboardSport::Football,
             content_height: 0.0,
             card_layout: Vec::new(),
         })
@@ -384,6 +418,17 @@ impl DashboardRenderer {
     pub fn hit_test(&self, x: f32, y: f32, _match_count: usize) -> Option<HitTarget> {
         let w = self.w as f32;
 
+        // Sport switcher sits in the title bar, ahead of standard caption controls.
+        if y >= 6.0 && y <= 42.0 {
+            let switcher_left = w - 394.0;
+            if x >= switcher_left && x < switcher_left + 116.0 {
+                return Some(HitTarget::CricketTab);
+            }
+            if x >= switcher_left + 116.0 && x < switcher_left + 232.0 {
+                return Some(HitTarget::FootballTab);
+            }
+        }
+
         // Caption Buttons in Title Bar (Right-aligned, 54px wide each)
         if y >= 0.0 && y <= TITLE_BAR_HEIGHT {
             // Standard Win11-sized caption targets, right aligned.
@@ -444,8 +489,29 @@ impl DashboardRenderer {
             None,
         );
 
-        let title_rect = D2D_RECT_F { left: 28.0, top: 0.0, right: w - 156.0, bottom: TITLE_BAR_HEIGHT };
+        let title_rect = D2D_RECT_F { left: 28.0, top: 0.0, right: w - 416.0, bottom: TITLE_BAR_HEIGHT };
         self.fmt_app_title.text(&self.rt, "SportsPulse", &title_rect, &self.brushes.white);
+
+        // A familiar two-choice sport switcher keeps discovery focused without creating a
+        // separate settings surface. It is intentionally beside the app name, not in content.
+        let switcher_rect = D2D_RECT_F { left: w - 394.0, top: 6.0, right: w - 162.0, bottom: 42.0 };
+        let switcher_rr = D2D1_ROUNDED_RECT { rect: switcher_rect, radiusX: 8.0, radiusY: 8.0 };
+        self.rt.FillRoundedRectangle(&switcher_rr, &self.brushes.icon_box_bg);
+        self.rt.DrawRoundedRectangle(&switcher_rr, &self.brushes.border, 1.0, None);
+        let cricket_rect = D2D_RECT_F { left: switcher_rect.left + 3.0, top: 9.0, right: switcher_rect.left + 113.0, bottom: 39.0 };
+        let football_rect = D2D_RECT_F { left: switcher_rect.left + 119.0, top: 9.0, right: switcher_rect.right - 3.0, bottom: 39.0 };
+        for (sport, rect, label) in [
+            (DashboardSport::Cricket, cricket_rect, "CRICKET"),
+            (DashboardSport::Football, football_rect, "FOOTBALL"),
+        ] {
+            if self.active_sport == sport {
+                let tab_rr = D2D1_ROUNDED_RECT { rect, radiusX: 6.0, radiusY: 6.0 };
+                self.rt.FillRoundedRectangle(&tab_rr, &self.brushes.card_hover);
+                self.fmt_badge.text(&self.rt, label, &rect, &self.brushes.white);
+            } else {
+                self.fmt_badge.text(&self.rt, label, &rect, &self.brushes.dim);
+            }
+        }
 
         // 3. Caption Buttons: Minimize (−), Maximize/Restore (□ / ❐), Close (✕)
         let btn_h = TITLE_BAR_HEIGHT;
@@ -493,20 +559,23 @@ impl DashboardRenderer {
 
         // The content deliberately starts with live/upcoming state instead of repeating a
         // generic "match discovery" heading. It makes the next decision obvious at a glance.
-        if matches.is_empty() {
+        let sport_matches: Vec<(usize, &DiscoveredMatch)> = matches.iter().enumerate()
+            .filter(|(_, m)| self.active_sport.matches(&m.sport))
+            .collect();
+        if sport_matches.is_empty() {
             self.scroll_offset = 0;
             self.content_height = 0.0;
             let empty_rect = D2D_RECT_F { left: 32.0, top: 280.0, right: w - 32.0, bottom: 360.0 };
             self.fmt_subtitle.text(
                 &self.rt,
-                "No live matches detected currently. Polling feeds in background...",
+                &format!("No {} fixtures right now.", self.active_sport.label()),
                 &empty_rect,
                 &self.brushes.subtle,
             );
         } else {
             let mut live_groups = Vec::new();
             let mut upcoming_groups = Vec::new();
-            for (index, m) in matches.iter().enumerate() {
+            for (index, m) in sport_matches {
                 if is_live_match(m) {
                     push_to_league_group(&mut live_groups, &m.league_name, index);
                 } else {
@@ -528,21 +597,21 @@ impl DashboardRenderer {
                     continue;
                 }
 
-                let section_rect = D2D_RECT_F { left: CARD_LEFT, top: y, right: w - CARD_RIGHT, bottom: y + 24.0 };
+                let section_rect = D2D_RECT_F { left: CARD_LEFT, top: y, right: w - CARD_RIGHT, bottom: y + 28.0 };
                 let section_label = if is_live { "●  LIVE MATCHES" } else { "◷  UPCOMING MATCHES" };
                 let section_brush = if is_live { &self.brushes.live_badge_text } else { &self.brushes.blue_badge_text };
                 self.fmt_eyebrow.text(&self.rt, section_label, &section_rect, section_brush);
-                y += 34.0;
+                y += 40.0;
 
                 for group in groups {
                     // The league marker is intentionally separate from its label. This avoids
                     // the bar colliding with the first letter at every window size.
-                    let league_marker = D2D_RECT_F { left: CARD_LEFT, top: y + 4.0, right: CARD_LEFT + 3.0, bottom: y + 24.0 };
-                    let league_rect = D2D_RECT_F { left: CARD_LEFT + 14.0, top: y, right: w - CARD_RIGHT, bottom: y + 28.0 };
+                    let league_marker = D2D_RECT_F { left: CARD_LEFT, top: y + 4.0, right: CARD_LEFT + 3.0, bottom: y + 26.0 };
+                    let league_rect = D2D_RECT_F { left: CARD_LEFT + 16.0, top: y, right: w - CARD_RIGHT, bottom: y + 30.0 };
                     let league_brush = if is_live { &self.brushes.live_badge_text } else { &self.brushes.blue_badge_text };
                     self.rt.FillRectangle(&league_marker, league_brush);
                     self.fmt_eyebrow.text(&self.rt, &group.name.to_uppercase(), &league_rect, &self.brushes.dim);
-                    y += 34.0;
+                    y += 40.0;
 
                     let group_cols = max_cols.min(group.match_indices.len().max(1));
                     let card_height = if is_live { 74.0 } else { ITEM_HEIGHT };
@@ -578,15 +647,24 @@ impl DashboardRenderer {
                         };
                         let action_rr = D2D1_ROUNDED_RECT { rect: action_rect, radiusX: 7.0, radiusY: 7.0 };
                         let action_hovered = self.action_hover_index == Some(index);
-                        self.rt.FillRoundedRectangle(
-                            &action_rr,
-                            if action_hovered { &self.brushes.action_hover_bg } else { &self.brushes.action_bg },
-                        );
-                        self.rt.DrawRoundedRectangle(&action_rr, &self.brushes.action_border, 1.0, None);
-                        let action_label = if is_selected {
-                            if action_hovered { "UNTRACK" } else { "TRACKING" }
-                        } else { "TRACK" };
-                        self.fmt_badge.text(&self.rt, action_label, &action_rect, &self.brushes.action_text);
+                        let (action_bg, action_border, action_text, action_label) = if is_selected {
+                            (
+                                if action_hovered { &self.brushes.action_danger_hover_bg } else { &self.brushes.action_danger_bg },
+                                &self.brushes.action_danger_border,
+                                &self.brushes.action_danger_text,
+                                "UNTRACK",
+                            )
+                        } else {
+                            (
+                                if action_hovered { &self.brushes.action_hover_bg } else { &self.brushes.action_bg },
+                                &self.brushes.action_border,
+                                &self.brushes.action_text,
+                                "TRACK",
+                            )
+                        };
+                        self.rt.FillRoundedRectangle(&action_rr, action_bg);
+                        self.rt.DrawRoundedRectangle(&action_rr, action_border, 1.0, None);
+                        self.fmt_badge.text(&self.rt, action_label, &action_rect, action_text);
 
                         let text_right = action_rect.left - 20.0;
                         if is_live {

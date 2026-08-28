@@ -20,7 +20,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
     GetWindowLongPtrW, GetWindowRect, IsIconic, IsWindowVisible, LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassExW,
-    SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW, TranslateMessage,
+    GetCursorPos, SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW, TranslateMessage,
     CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HCURSOR, HMENU, HTCAPTION, IDC_ARROW, MSG,
     SPI_GETWORKAREA, SWP_NOACTIVATE, SW_HIDE, SW_MINIMIZE, SW_RESTORE, SW_SHOW, SW_SHOWNOACTIVATE, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
     WM_APP, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP,
@@ -39,7 +39,7 @@ use engine::events::{AppEvent, DiscoveredMatch};
 use engine::match_state::ActiveMatchesState;
 use render::Renderer;
 use popup::{MiniPopupWindow, POPUP_W, POPUP_H};
-use dashboard::{DashboardRenderer, DASH_NORMAL_W, DASH_NORMAL_H, HitTarget, WM_APP_SELECT_MATCH, WM_APP_UNTRACK};
+use dashboard::{DashboardRenderer, DashboardSport, DASH_NORMAL_W, DASH_NORMAL_H, HitTarget, WM_APP_SELECT_MATCH, WM_APP_UNTRACK};
 use tray::{TrayIcon, WM_APP_TRAY, ID_TRAY_TOGGLE_SCORE, ID_TRAY_OPEN_DASHBOARD, ID_TRAY_UNTRACK_MATCH, ID_TRAY_QUIT};
 
 pub const WM_APP_SCORE_UPDATE: u32 = WM_APP + 1;
@@ -80,16 +80,16 @@ unsafe fn work_area() -> RECT {
 unsafe fn bottom_right_score_point() -> POINT {
     let wa = work_area();
     POINT {
-        x: wa.right - SCORE_W as i32 - 24,
-        y: wa.bottom - SCORE_H as i32 - 24,
+        x: wa.right - SCORE_W as i32 - 12,
+        y: wa.bottom - SCORE_H as i32 - 12,
     }
 }
 
 unsafe fn bottom_right_popup_point() -> POINT {
     let wa = work_area();
     POINT {
-        x: wa.right - POPUP_W as i32 - 24,
-        y: wa.bottom - SCORE_H as i32 - POPUP_H as i32 - 32,
+        x: wa.right - POPUP_W as i32 - 12,
+        y: wa.bottom - SCORE_H as i32 - POPUP_H as i32 - 20,
     }
 }
 
@@ -167,6 +167,37 @@ unsafe fn toggle_dashboard_maximize(state: &mut AppState) {
             &state.dash_selected_id,
         );
     }
+}
+
+/// Mirrors standard Windows behavior: pulling a maximized window from its title bar
+/// restores its normal size beneath the pointer and immediately continues the drag.
+unsafe fn restore_dashboard_for_drag(state: &mut AppState, grab_x: f32, grab_y: f32) {
+    let hwnd = state.dash_hwnd;
+    let restore = state.dashboard_restore_rect;
+    let Some(renderer) = state.dash_renderer.as_mut() else { return; };
+    if !renderer.is_maximized {
+        return;
+    }
+
+    let mut cursor = POINT::default();
+    let _ = GetCursorPos(&mut cursor);
+    let mut maximized = RECT::default();
+    let _ = GetWindowRect(hwnd, &mut maximized);
+    let max_width = (maximized.right - maximized.left).max(1) as f32;
+    let normal_width = (restore.right - restore.left).max(1);
+    let normal_height = (restore.bottom - restore.top).max(1);
+    let pointer_ratio = (grab_x / max_width).clamp(0.12, 0.88);
+    let new_left = cursor.x - (normal_width as f32 * pointer_ratio).round() as i32;
+    let new_top = cursor.y - grab_y.round().clamp(12.0, 32.0) as i32;
+
+    renderer.is_maximized = false;
+    let _ = SetWindowPos(hwnd, None, new_left, new_top, normal_width, normal_height, SWP_NOACTIVATE);
+    let _ = renderer.resize(normal_width as u32, normal_height as u32);
+    let _ = renderer.present(
+        &POINT { x: new_left, y: new_top },
+        &state.dash_matches,
+        &state.dash_selected_id,
+    );
 }
 
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -364,13 +395,13 @@ unsafe extern "system" fn dashboard_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARA
             let y = (lparam.0 >> 16) as i16 as f32;
 
             if let Some(state) = state_ptr.as_mut() {
-                if let Some(r) = state.dash_renderer.as_mut() {
-                    let hit = r.hit_test(x, y, state.dash_matches.len());
-                    if matches!(hit, Some(HitTarget::TitleBar)) {
-                        let _ = ReleaseCapture();
-                        let _ = SendMessageW(hwnd, WM_NCLBUTTONDOWN, WPARAM(HTCAPTION as usize), LPARAM(0));
-                        return LRESULT(0);
-                    }
+                let hit = state.dash_renderer.as_ref()
+                    .and_then(|r| r.hit_test(x, y, state.dash_matches.len()));
+                if matches!(hit, Some(HitTarget::TitleBar)) {
+                    restore_dashboard_for_drag(state, x, y);
+                    let _ = ReleaseCapture();
+                    let _ = SendMessageW(hwnd, WM_NCLBUTTONDOWN, WPARAM(HTCAPTION as usize), LPARAM(0));
+                    return LRESULT(0);
                 }
             }
             LRESULT(0)
@@ -446,6 +477,24 @@ unsafe extern "system" fn dashboard_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARA
                         }
                         Some(HitTarget::CloseButton) => {
                             let _ = ShowWindow(hwnd, SW_HIDE);
+                        }
+                        Some(HitTarget::CricketTab) | Some(HitTarget::FootballTab) => {
+                            let sport = if matches!(hit, Some(HitTarget::CricketTab)) {
+                                DashboardSport::Cricket
+                            } else {
+                                DashboardSport::Football
+                            };
+                            if r.active_sport != sport {
+                                r.active_sport = sport;
+                                r.scroll_offset = 0;
+                                let mut rect = RECT::default();
+                                let _ = GetWindowRect(hwnd, &mut rect);
+                                let _ = r.present(
+                                    &POINT { x: rect.left, y: rect.top },
+                                    &state.dash_matches,
+                                    &state.dash_selected_id,
+                                );
+                            }
                         }
                         Some(HitTarget::MatchAction(idx)) => {
                             if idx < state.dash_matches.len() {

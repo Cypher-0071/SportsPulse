@@ -444,7 +444,7 @@ impl Renderer {
         self.formats.info.text(&self.rt, &info_str, &info_rect, &self.brushes.dim);
     }
 
-    unsafe fn render_soccer(&self, w: f32, h: f32, score: &MatchScore) {
+    unsafe fn render_soccer(&self, w: f32, _h: f32, score: &MatchScore) {
         // 1. Top bar: Title + Clock Badge
         let title_rect = D2D_RECT_F { left: 26.0, top: 14.0, right: w - 110.0, bottom: 40.0 };
         self.formats.title.text(&self.rt, &score.match_title, &title_rect, &self.brushes.dim);
@@ -487,18 +487,8 @@ impl Renderer {
             &self.brushes.white,
         );
 
-        // 3. Bottom Status Bar (8px radius)
-        let status_desc = match score.status {
-            MatchStatus::Live => "Live Match in Progress".to_string(),
-            MatchStatus::Break => "Half Time".to_string(),
-            MatchStatus::Completed => "Full Time".to_string(),
-            MatchStatus::Scheduled => "Upcoming Fixture".to_string(),
-            MatchStatus::NoMatch => "".to_string(),
-        };
-        let info_rect = D2D_RECT_F { left: 20.0, top: h - 48.0, right: w - 20.0, bottom: h - 14.0 };
-        let info_rr = D2D1_ROUNDED_RECT { rect: info_rect, radiusX: 8.0, radiusY: 8.0 };
-        self.rt.FillRoundedRectangle(&info_rr, &self.brushes.card_surface);
-        self.formats.info.text(&self.rt, &status_desc, &info_rect, &self.brushes.dim);
+        // Match status is already communicated by the clock badge. Keeping the score area
+        // clear makes the compact overlay calmer and avoids repeating "Live Match in Progress".
     }
 
     unsafe fn render_no_match(&self, w: f32, _h: f32) {
