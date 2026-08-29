@@ -14,6 +14,35 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
+use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX};
+use windows::Win32::System::Threading::GetCurrentProcess;
+
+pub fn log_live_benchmark_sample(state_label: &str) {
+    unsafe {
+        let mut pmc = PROCESS_MEMORY_COUNTERS_EX::default();
+        pmc.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+        let _ = GetProcessMemoryInfo(
+            GetCurrentProcess(),
+            &mut pmc as *mut _ as *mut _,
+            pmc.cb,
+        );
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("C:\\sp_bench\\live_benchmark_verified.log")
+        {
+            let priv_mb = pmc.PrivateUsage as f64 / (1024.0 * 1024.0);
+            let ws_mb = pmc.WorkingSetSize as f64 / (1024.0 * 1024.0);
+            let peak_mb = pmc.PeakWorkingSetSize as f64 / (1024.0 * 1024.0);
+            let _ = writeln!(
+                f,
+                "STATE: {} | PrivateCommit: {} bytes ({:.2} MB) | WorkingSet: {} bytes ({:.2} MB) | PeakWS: {:.2} MB",
+                state_label, pmc.PrivateUsage, priv_mb, pmc.WorkingSetSize, ws_mb, peak_mb
+            );
+        }
+    }
+}
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, ReleaseCapture, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL,
     VK_SPACE,
@@ -151,6 +180,7 @@ unsafe fn hide_overlay(hwnd: HWND, state: &mut AppState) {
         popup.hide();
     }
     let _ = ShowWindow(hwnd, SW_HIDE);
+    log_live_benchmark_sample("Idle Background (Tray Only)");
 }
 
 unsafe fn bottom_right_popup_point() -> POINT {
@@ -175,6 +205,7 @@ unsafe fn show_overlay(hwnd: HWND, state: &mut AppState, score: &Option<MatchSco
     }
     place_and_present_overlay(hwnd, state, score);
     let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    log_live_benchmark_sample("Scoreboard Shown (Overlay Active)");
 }
 
 unsafe fn toggle_scoreboard(hwnd: HWND, state: &mut AppState) {
@@ -218,6 +249,7 @@ unsafe fn show_dashboard(state: &mut AppState) {
         let _ = ShowWindow(state.dash_hwnd, SW_SHOW);
     }
     let _ = SetForegroundWindow(state.dash_hwnd);
+    log_live_benchmark_sample("Dashboard Open (Match Discovery Active)");
 }
 
 /// Full work-area maximize for the custom-rendered dashboard. This deliberately avoids
