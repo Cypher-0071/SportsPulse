@@ -1,11 +1,11 @@
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 
 #[derive(Clone, Default)]
 pub struct ActiveMatchesState {
     pub active_matches: Arc<Mutex<Vec<(String, String, String, String, String, String, String)>>>, // (sport, series_id, match_id, match_title, status, league_name, start_time)
-    pub selected_match: Arc<Mutex<Option<(String, String, String)>>>,      // (sport, series_id, match_id)
+    pub selected_match: Arc<Mutex<Option<(String, String, String)>>>, // (sport, series_id, match_id)
     pub notify: Arc<Notify>,
     pub initial_fetch_completed: Arc<AtomicBool>,
 }

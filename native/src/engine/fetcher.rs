@@ -39,7 +39,8 @@ pub async fn start_polling(
         let mut sleep_duration = Duration::from_secs(300);
 
         // Fetch scoreboards if not fetched recently (every 60s)
-        let should_fetch_scoreboard = last_scoreboard_fetch.map_or(true, |t| t.elapsed() >= Duration::from_secs(60));
+        let should_fetch_scoreboard =
+            last_scoreboard_fetch.map_or(true, |t| t.elapsed() >= Duration::from_secs(60));
         if should_fetch_scoreboard {
             let mut discovered_matches: Vec<DiscoveredMatch> = Vec::new();
             let today_str = chrono::Local::now().format("%Y%m%d").to_string();
@@ -107,21 +108,23 @@ pub async fn start_polling(
             }
 
             // Update active matches list (kept as tuple vec to avoid touching match_state.rs)
-            let discovered_tuples: Vec<(String, String, String, String, String, String, String)> = discovered_matches
-                .iter()
-                .map(|d| {
-                    (
-                        d.sport.clone(),
-                        d.series_id.clone(),
-                        d.match_id.clone(),
-                        d.title.clone(),
-                        d.status.clone(),
-                        d.league_name.clone(),
-                        d.start_time.clone(),
-                    )
-                })
-                .collect();
+            let discovered_tuples: Vec<(String, String, String, String, String, String, String)> =
+                discovered_matches
+                    .iter()
+                    .map(|d| {
+                        (
+                            d.sport.clone(),
+                            d.series_id.clone(),
+                            d.match_id.clone(),
+                            d.title.clone(),
+                            d.status.clone(),
+                            d.league_name.clone(),
+                            d.start_time.clone(),
+                        )
+                    })
+                    .collect();
 
+            let first_scoreboard = last_scoreboard_fetch.is_none();
             let mut list_changed = false;
             if let Ok(mut active_m) = match_state.active_matches.lock() {
                 if *active_m != discovered_tuples {
@@ -130,8 +133,14 @@ pub async fn start_polling(
                 }
             }
 
-            if list_changed {
-                eprintln!("[DEBUG] Discovered matches changed ({} entries)", discovered_matches.len());
+            if list_changed || first_scoreboard {
+                match_state
+                    .initial_fetch_completed
+                    .store(true, Ordering::Relaxed);
+                eprintln!(
+                    "[DEBUG] Discovered matches changed ({} entries)",
+                    discovered_matches.len()
+                );
                 let _ = events.send(AppEvent::MatchesDiscovered(discovered_matches));
             }
 
@@ -139,7 +148,11 @@ pub async fn start_polling(
         }
 
         // Determine which match to track
-        let match_to_track = match_state.selected_match.lock().ok().and_then(|s| s.clone());
+        let match_to_track = match_state
+            .selected_match
+            .lock()
+            .ok()
+            .and_then(|s| s.clone());
 
         if let Some((sport, series_id, match_id)) = match_to_track {
             let is_already_completed = last_completed_match_id.as_ref() == Some(&match_id);
@@ -163,14 +176,20 @@ pub async fn start_polling(
                             } else {
                                 parse_match_detail(&detail_json, &series_id, &match_id)
                             };
-                            eprintln!("[DEBUG] HTTP {} | parse result: {}", status_code, parsed_score.is_some());
+                            eprintln!(
+                                "[DEBUG] HTTP {} | parse result: {}",
+                                status_code,
+                                parsed_score.is_some()
+                            );
 
                             if let Some(score) = parsed_score {
                                 cache.set(Some(score.clone()));
-                                let _ = events.send(AppEvent::ScoreChanged(Box::new(score.clone())));
+                                let _ =
+                                    events.send(AppEvent::ScoreChanged(Box::new(score.clone())));
 
                                 // Detect match change initialization for completed status
-                                let is_first_fetch_for_match = last_tracked_match_id.as_ref() != Some(&match_id);
+                                let is_first_fetch_for_match =
+                                    last_tracked_match_id.as_ref() != Some(&match_id);
                                 if is_first_fetch_for_match {
                                     last_tracked_match_id = Some(match_id.clone());
                                     last_ball_id = None;
@@ -182,7 +201,9 @@ pub async fn start_polling(
                                 }
 
                                 // Check for win event (transition to Completed)
-                                if score.status == MatchStatus::Completed && last_completed_match_id.as_ref() != Some(&match_id) {
+                                if score.status == MatchStatus::Completed
+                                    && last_completed_match_id.as_ref() != Some(&match_id)
+                                {
                                     last_completed_match_id = Some(match_id.clone());
 
                                     let winner_name = if score.team1.is_winner {
@@ -198,11 +219,15 @@ pub async fn start_polling(
                                             event_type: MatchEventType::Win,
                                             title: "MATCH WON!".to_string(),
                                             description: format!("{} won the match!", w_name),
-                                            score: format!("{} vs {}", score.team1.abbreviation, score.team2.abbreviation),
+                                            score: format!(
+                                                "{} vs {}",
+                                                score.team1.abbreviation, score.team2.abbreviation
+                                            ),
                                             sport: sport.clone(),
                                         };
                                         cache.set_latest_event(Some(win_event.clone()));
-                                        let _ = events.send(AppEvent::MatchEvent(Box::new(win_event)));
+                                        let _ =
+                                            events.send(AppEvent::MatchEvent(Box::new(win_event)));
                                     }
                                 }
 
@@ -224,7 +249,8 @@ pub async fn start_polling(
                                             Duration::from_secs(3)
                                         } else {
                                             // Set 10s polling rate for Test cricket (slower pace), 2s for T20/ODIs
-                                            let is_test = score.match_title.to_lowercase().contains("test");
+                                            let is_test =
+                                                score.match_title.to_lowercase().contains("test");
                                             if is_test {
                                                 Duration::from_secs(10)
                                             } else {
@@ -253,7 +279,9 @@ pub async fn start_polling(
             sleep_duration = Duration::from_secs(30); // Re-check scoreboard every 30s for new live matches
         }
 
-        match_state.initial_fetch_completed.store(true, Ordering::Relaxed);
+        match_state
+            .initial_fetch_completed
+            .store(true, Ordering::Relaxed);
 
         tokio::select! {
             _ = tokio::time::sleep(sleep_duration) => {},

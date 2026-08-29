@@ -1,5 +1,5 @@
+use super::models::{MatchEvent, MatchScore};
 use std::sync::{Arc, RwLock};
-use super::models::{MatchScore, MatchEvent};
 
 #[derive(Clone, Default)]
 pub struct ScoreCache {

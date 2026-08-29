@@ -3,34 +3,35 @@
 
 #![allow(dead_code)]
 
+use std::time::Instant;
 use windows::core::*;
 use windows::Win32::Foundation::{COLORREF, HWND, POINT, SIZE};
+
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_POINT_2F, D2D_RECT_F,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateFactory, D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-    D2D1_FEATURE_LEVEL_DEFAULT, D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_SOFTWARE,
-    D2D1_ROUNDED_RECT, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
-    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, ID2D1Factory, ID2D1RenderTarget, ID2D1SolidColorBrush,
+    D2D1CreateFactory, ID2D1Factory, ID2D1RenderTarget, ID2D1SolidColorBrush,
+    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_ELLIPSE,
+    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_FEATURE_LEVEL_DEFAULT, D2D1_RENDER_TARGET_PROPERTIES,
+    D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1_ROUNDED_RECT, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
 };
 use windows::Win32::Graphics::DirectWrite::{
-    DWriteCreateFactory, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STYLE_NORMAL,
-    DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL,
-    DWRITE_FONT_STRETCH_NORMAL,
-    DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
-    DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
-    DWRITE_WORD_WRAPPING_NO_WRAP, IDWriteFactory, IDWriteTextFormat,
+    DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
+    DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
+    DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_MEASURING_MODE_NATURAL,
+    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER,
+    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_WORD_WRAPPING_NO_WRAP,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetWindowDC, ReleaseDC,
-    SelectObject, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, BI_RGB,
-    DIB_RGB_COLORS, HBITMAP, HDC, AC_SRC_ALPHA, AC_SRC_OVER,
+    SelectObject, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION,
+    DIB_RGB_COLORS, HBITMAP, HDC,
 };
 use windows::Win32::Graphics::Imaging::{
-    CLSID_WICImagingFactory, GUID_WICPixelFormat32bppPBGRA, IWICBitmap,
-    IWICImagingFactory, WICBitmapCacheOnDemand,
+    CLSID_WICImagingFactory, GUID_WICPixelFormat32bppPBGRA, IWICBitmap, IWICImagingFactory,
+    WICBitmapCacheOnDemand,
 };
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA};
@@ -48,7 +49,8 @@ pub const WM_APP_SELECT_MATCH: u32 = windows::Win32::UI::WindowsAndMessaging::WM
 pub const WM_APP_UNTRACK: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 11;
 
 pub const TITLE_BAR_HEIGHT: f32 = 48.0;
-pub const ITEM_TOP_START: f32 = 76.0;
+pub const PAGE_HEADER_HEIGHT: f32 = 68.0;
+pub const ITEM_TOP_START: f32 = TITLE_BAR_HEIGHT + PAGE_HEADER_HEIGHT + 16.0;
 pub const ITEM_HEIGHT: f32 = 92.0;
 pub const ITEM_SPACING: f32 = 12.0;
 const CARD_LEFT: f32 = 32.0;
@@ -56,6 +58,10 @@ const CARD_RIGHT: f32 = 32.0;
 const ACTION_W: f32 = 108.0;
 const CONTENT_BOTTOM_GUTTER: f32 = 24.0;
 const SCROLL_STEP: f32 = 72.0;
+const SWITCHER_W: f32 = 232.0;
+const SWITCHER_H: f32 = 36.0;
+const EMPTY_CARD_H: f32 = 84.0;
+const SPINNER_RADIUS: f32 = 16.0;
 
 #[inline]
 fn color(r: f32, g: f32, b: f32, a: f32) -> D2D1_COLOR_F {
@@ -108,7 +114,9 @@ impl DashboardSport {
     fn matches(self, sport: &str) -> bool {
         match self {
             Self::Cricket => sport.eq_ignore_ascii_case("cricket"),
-            Self::Football => sport.eq_ignore_ascii_case("soccer") || sport.eq_ignore_ascii_case("football"),
+            Self::Football => {
+                sport.eq_ignore_ascii_case("soccer") || sport.eq_ignore_ascii_case("football")
+            }
         }
     }
 
@@ -132,18 +140,29 @@ fn is_live_match(m: &DiscoveredMatch) -> bool {
 }
 
 fn push_to_league_group(groups: &mut Vec<LeagueGroup>, league_name: &str, index: usize) {
-    let name = if league_name.trim().is_empty() { "Other fixtures" } else { league_name };
+    let name = if league_name.trim().is_empty() {
+        "Other Series"
+    } else {
+        league_name
+    };
     if let Some(group) = groups.iter_mut().find(|group| group.name == name) {
         group.match_indices.push(index);
     } else {
-        groups.push(LeagueGroup { name: name.to_owned(), match_indices: vec![index] });
+        groups.push(LeagueGroup {
+            name: name.to_owned(),
+            match_indices: vec![index],
+        });
     }
 }
 
 fn format_upcoming_time(value: &str) -> String {
     let offset = FixedOffset::east_opt(5 * 60 * 60 + 30 * 60).unwrap();
     DateTime::parse_from_rfc3339(value)
-        .map(|time| time.with_timezone(&offset).format("%-d %b, %I:%M %p").to_string())
+        .map(|time| {
+            time.with_timezone(&offset)
+                .format("%-d %b, %I:%M %p")
+                .to_string()
+        })
         .unwrap_or_else(|_| value.to_owned())
 }
 
@@ -178,46 +197,53 @@ struct Brushes {
     final_badge_bg: ID2D1SolidColorBrush,
     final_badge_text: ID2D1SolidColorBrush,
     close_btn_hover_bg: ID2D1SolidColorBrush,
+    spinner_track: ID2D1SolidColorBrush,
+    spinner_accent: ID2D1SolidColorBrush,
 }
 
 impl Brushes {
     unsafe fn create(rt: &ID2D1RenderTarget) -> Result<Self> {
         Ok(Self {
-            bg:           rt.CreateSolidColorBrush(&color(0.125, 0.125, 0.125, 1.0), None)?,  // #202020
-            header_bg:    rt.CreateSolidColorBrush(&color(0.110, 0.110, 0.110, 1.0), None)?,  // #1C1C1C
-            card_bg:      rt.CreateSolidColorBrush(&color(0.176, 0.176, 0.176, 1.0), None)?,  // #2D2D2D
-            card_hover:   rt.CreateSolidColorBrush(&color(0.230, 0.230, 0.230, 1.0), None)?,  // #3B3B3B
-            card_active:  rt.CreateSolidColorBrush(&color(0.090, 0.220, 0.130, 1.0), None)?,  // #173821
-            border:       rt.CreateSolidColorBrush(&color(0.245, 0.245, 0.245, 1.0), None)?,  // #3E3E3E
-            active_border:rt.CreateSolidColorBrush(&color(0.133, 0.773, 0.369, 1.0), None)?,  // #22C55E
-            divider:      rt.CreateSolidColorBrush(&color(0.210, 0.210, 0.210, 1.0), None)?,  // #353535
-            white:        rt.CreateSolidColorBrush(&color(1.0, 1.0, 1.0, 1.0), None)?,        // #FFFFFF
-            dim:          rt.CreateSolidColorBrush(&color(0.65, 0.65, 0.65, 1.0), None)?,     // #A6A6A6
-            subtle:       rt.CreateSolidColorBrush(&color(0.44, 0.44, 0.44, 1.0), None)?,     // #707070
-            icon_box_bg:  rt.CreateSolidColorBrush(&color(0.145, 0.145, 0.145, 1.0), None)?,  // #252525
-            action_bg:    rt.CreateSolidColorBrush(&color(0.130, 0.130, 0.130, 1.0), None)?,
+            bg: rt.CreateSolidColorBrush(&color(0.125, 0.125, 0.125, 1.0), None)?, // #202020
+            header_bg: rt.CreateSolidColorBrush(&color(0.110, 0.110, 0.110, 1.0), None)?, // #1C1C1C
+            card_bg: rt.CreateSolidColorBrush(&color(0.176, 0.176, 0.176, 1.0), None)?, // #2D2D2D
+            card_hover: rt.CreateSolidColorBrush(&color(0.230, 0.230, 0.230, 1.0), None)?, // #3B3B3B
+            card_active: rt.CreateSolidColorBrush(&color(0.090, 0.220, 0.130, 1.0), None)?, // #173821
+            border: rt.CreateSolidColorBrush(&color(0.245, 0.245, 0.245, 1.0), None)?, // #3E3E3E
+            active_border: rt.CreateSolidColorBrush(&color(0.133, 0.773, 0.369, 1.0), None)?, // #22C55E
+            divider: rt.CreateSolidColorBrush(&color(0.210, 0.210, 0.210, 1.0), None)?, // #353535
+            white: rt.CreateSolidColorBrush(&color(1.0, 1.0, 1.0, 1.0), None)?,         // #FFFFFF
+            dim: rt.CreateSolidColorBrush(&color(0.65, 0.65, 0.65, 1.0), None)?,        // #A6A6A6
+            subtle: rt.CreateSolidColorBrush(&color(0.44, 0.44, 0.44, 1.0), None)?,     // #707070
+            icon_box_bg: rt.CreateSolidColorBrush(&color(0.145, 0.145, 0.145, 1.0), None)?, // #252525
+            action_bg: rt.CreateSolidColorBrush(&color(0.130, 0.130, 0.130, 1.0), None)?,
             action_hover_bg: rt.CreateSolidColorBrush(&color(0.220, 0.220, 0.220, 1.0), None)?,
             action_border: rt.CreateSolidColorBrush(&color(0.270, 0.270, 0.270, 1.0), None)?,
-            action_text:  rt.CreateSolidColorBrush(&color(0.82, 0.82, 0.82, 1.0), None)?,
+            action_text: rt.CreateSolidColorBrush(&color(0.82, 0.82, 0.82, 1.0), None)?,
             action_danger_bg: rt.CreateSolidColorBrush(&color(0.340, 0.082, 0.102, 1.0), None)?,
-            action_danger_hover_bg: rt.CreateSolidColorBrush(&color(0.500, 0.090, 0.122, 1.0), None)?,
-            action_danger_border: rt.CreateSolidColorBrush(&color(0.900, 0.250, 0.290, 1.0), None)?,
+            action_danger_hover_bg: rt
+                .CreateSolidColorBrush(&color(0.500, 0.090, 0.122, 1.0), None)?,
+            action_danger_border: rt
+                .CreateSolidColorBrush(&color(0.900, 0.250, 0.290, 1.0), None)?,
             action_danger_text: rt.CreateSolidColorBrush(&color(1.000, 0.850, 0.860, 1.0), None)?,
-            caption_btn_hover_bg: rt.CreateSolidColorBrush(&color(0.235, 0.235, 0.235, 1.0), None)?, // #3C3C3C
+            caption_btn_hover_bg: rt
+                .CreateSolidColorBrush(&color(0.235, 0.235, 0.235, 1.0), None)?, // #3C3C3C
 
-            live_badge_bg:   rt.CreateSolidColorBrush(&color(0.055, 0.240, 0.110, 1.0), None)?,
+            live_badge_bg: rt.CreateSolidColorBrush(&color(0.055, 0.240, 0.110, 1.0), None)?,
             live_badge_text: rt.CreateSolidColorBrush(&color(0.133, 0.773, 0.369, 1.0), None)?,
 
-            amber_badge_bg:   rt.CreateSolidColorBrush(&color(0.320, 0.180, 0.020, 1.0), None)?,
+            amber_badge_bg: rt.CreateSolidColorBrush(&color(0.320, 0.180, 0.020, 1.0), None)?,
             amber_badge_text: rt.CreateSolidColorBrush(&color(0.961, 0.620, 0.043, 1.0), None)?,
 
-            blue_badge_bg:   rt.CreateSolidColorBrush(&color(0.020, 0.190, 0.300, 1.0), None)?,
+            blue_badge_bg: rt.CreateSolidColorBrush(&color(0.020, 0.190, 0.300, 1.0), None)?,
             blue_badge_text: rt.CreateSolidColorBrush(&color(0.220, 0.741, 0.973, 1.0), None)?,
 
-            final_badge_bg:   rt.CreateSolidColorBrush(&color(0.165, 0.165, 0.165, 1.0), None)?,
+            final_badge_bg: rt.CreateSolidColorBrush(&color(0.165, 0.165, 0.165, 1.0), None)?,
             final_badge_text: rt.CreateSolidColorBrush(&color(0.58, 0.58, 0.58, 1.0), None)?,
 
-            close_btn_hover_bg: rt.CreateSolidColorBrush(&color(0.910, 0.067, 0.137, 1.0), None)?,  // #E81123
+            close_btn_hover_bg: rt.CreateSolidColorBrush(&color(0.910, 0.067, 0.137, 1.0), None)?, // #E81123
+            spinner_track: rt.CreateSolidColorBrush(&color(1.0, 1.0, 1.0, 0.10), None)?,
+            spinner_accent: rt.CreateSolidColorBrush(&color(0.353, 0.608, 0.835, 1.0), None)?, // #5A9BD5
         })
     }
 }
@@ -233,12 +259,15 @@ pub struct DashboardRenderer {
     pub h: i32,
     brushes: Brushes,
     fmt_app_title: Fmt,
+    fmt_page_title: Fmt,
     fmt_eyebrow: Fmt,
     fmt_subtitle: Fmt,
     fmt_item_title: Fmt,
     fmt_item_sub: Fmt,
     fmt_badge: Fmt,
     fmt_icon: Fmt,
+    fmt_empty: Fmt,
+    fmt_loading: Fmt,
     fmt_caption_min: Fmt,
     fmt_caption_max: Fmt,
     fmt_caption_close: Fmt,
@@ -247,11 +276,14 @@ pub struct DashboardRenderer {
     pub min_hover: bool,
     pub max_hover: bool,
     pub close_hover: bool,
+    pub cricket_hover: bool,
+    pub football_hover: bool,
     pub is_maximized: bool,
     pub scroll_offset: usize,
     pub active_sport: DashboardSport,
     content_height: f32,
     card_layout: Vec<(usize, D2D_RECT_F)>,
+    spinner_origin: Instant,
 }
 
 impl DashboardRenderer {
@@ -261,12 +293,8 @@ impl DashboardRenderer {
         let wicf: IWICImagingFactory =
             CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
 
-        let wic = wicf.CreateBitmap(
-            w,
-            h,
-            &GUID_WICPixelFormat32bppPBGRA,
-            WICBitmapCacheOnDemand,
-        )?;
+        let wic =
+            wicf.CreateBitmap(w, h, &GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand)?;
 
         let props = D2D1_RENDER_TARGET_PROPERTIES {
             r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
@@ -300,21 +328,22 @@ impl DashboardRenderer {
 
         let brushes = Brushes::create(&rt)?;
 
-        let mk_font = |size: f32, weight: DWRITE_FONT_WEIGHT, align: DWRITE_TEXT_ALIGNMENT| -> Result<Fmt> {
-            let fmt = dwrite.CreateTextFormat(
-                w!("Segoe UI Variable Display"),
-                None,
-                weight,
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                size,
-                w!("en-us"),
-            )?;
-            fmt.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
-            fmt.SetTextAlignment(align)?;
-            fmt.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
-            Ok(Fmt { fmt })
-        };
+        let mk_font =
+            |size: f32, weight: DWRITE_FONT_WEIGHT, align: DWRITE_TEXT_ALIGNMENT| -> Result<Fmt> {
+                let fmt = dwrite.CreateTextFormat(
+                    w!("Segoe UI Variable Display"),
+                    None,
+                    weight,
+                    DWRITE_FONT_STYLE_NORMAL,
+                    DWRITE_FONT_STRETCH_NORMAL,
+                    size,
+                    w!("en-us"),
+                )?;
+                fmt.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+                fmt.SetTextAlignment(align)?;
+                fmt.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+                Ok(Fmt { fmt })
+            };
 
         Ok(Self {
             hwnd,
@@ -327,26 +356,52 @@ impl DashboardRenderer {
             h: h as i32,
             brushes,
             // Prominent, large, readable typography
-            fmt_app_title: mk_font(21.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING)?,
+            fmt_app_title: mk_font(16.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING)?,
+            fmt_page_title: mk_font(20.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING)?,
             fmt_eyebrow: mk_font(16.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING)?,
-            fmt_subtitle: mk_font(17.0, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_LEADING)?,
+            fmt_subtitle: mk_font(
+                17.0,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_TEXT_ALIGNMENT_LEADING,
+            )?,
             fmt_item_title: mk_font(22.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING)?,
-            fmt_item_sub: mk_font(17.0, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_LEADING)?,
-            fmt_badge: mk_font(14.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
-            fmt_icon: mk_font(30.0, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER)?,
+            fmt_item_sub: mk_font(
+                17.0,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_TEXT_ALIGNMENT_LEADING,
+            )?,
+            fmt_badge: mk_font(13.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
+            fmt_icon: mk_font(
+                22.0,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_TEXT_ALIGNMENT_CENTER,
+            )?,
+            fmt_empty: mk_font(
+                16.0,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_TEXT_ALIGNMENT_CENTER,
+            )?,
+            fmt_loading: mk_font(15.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
             fmt_caption_min: mk_font(20.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
             fmt_caption_max: mk_font(17.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
-            fmt_caption_close: mk_font(18.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
+            fmt_caption_close: mk_font(
+                18.0,
+                DWRITE_FONT_WEIGHT_BOLD,
+                DWRITE_TEXT_ALIGNMENT_CENTER,
+            )?,
             hover_index: None,
             action_hover_index: None,
             min_hover: false,
             max_hover: false,
             close_hover: false,
+            cricket_hover: false,
+            football_hover: false,
             is_maximized: false,
             scroll_offset: 0,
-            active_sport: DashboardSport::Football,
+            active_sport: DashboardSport::Cricket,
             content_height: 0.0,
             card_layout: Vec::new(),
+            spinner_origin: Instant::now(),
         })
     }
 
@@ -415,23 +470,71 @@ impl DashboardRenderer {
         Ok(())
     }
 
+    fn page_content_top() -> f32 {
+        TITLE_BAR_HEIGHT + PAGE_HEADER_HEIGHT
+    }
+
+    fn sport_switcher_rects(&self) -> (D2D_RECT_F, D2D_RECT_F, D2D_RECT_F) {
+        let w = self.w as f32;
+        let cy = TITLE_BAR_HEIGHT + PAGE_HEADER_HEIGHT / 2.0;
+        let switcher = D2D_RECT_F {
+            left: w - CARD_RIGHT - SWITCHER_W,
+            top: cy - SWITCHER_H / 2.0,
+            right: w - CARD_RIGHT,
+            bottom: cy + SWITCHER_H / 2.0,
+        };
+        let mid = switcher.left + SWITCHER_W / 2.0;
+        let cricket = D2D_RECT_F {
+            left: switcher.left + 3.0,
+            top: switcher.top + 3.0,
+            right: mid - 2.0,
+            bottom: switcher.bottom - 3.0,
+        };
+        let football = D2D_RECT_F {
+            left: mid + 2.0,
+            top: switcher.top + 3.0,
+            right: switcher.right - 3.0,
+            bottom: switcher.bottom - 3.0,
+        };
+        (switcher, cricket, football)
+    }
+
+    unsafe fn draw_spinner(&self, cx: f32, cy: f32) {
+        let ellipse = D2D1_ELLIPSE {
+            point: D2D_POINT_2F { x: cx, y: cy },
+            radiusX: SPINNER_RADIUS,
+            radiusY: SPINNER_RADIUS,
+        };
+        self.rt
+            .DrawEllipse(&ellipse, &self.brushes.spinner_track, 3.5, None);
+
+        let t = self.spinner_origin.elapsed().as_secs_f32();
+        let start = t * std::f32::consts::TAU * 0.95;
+        let sweep = 1.85_f32;
+        let steps = 20;
+        for i in 0..steps {
+            let a0 = start + sweep * (i as f32 / steps as f32);
+            let a1 = start + sweep * ((i + 1) as f32 / steps as f32);
+            self.rt.DrawLine(
+                D2D_POINT_2F {
+                    x: cx + SPINNER_RADIUS * a0.cos(),
+                    y: cy + SPINNER_RADIUS * a0.sin(),
+                },
+                D2D_POINT_2F {
+                    x: cx + SPINNER_RADIUS * a1.cos(),
+                    y: cy + SPINNER_RADIUS * a1.sin(),
+                },
+                &self.brushes.spinner_accent,
+                3.6,
+                None,
+            );
+        }
+    }
+
     pub fn hit_test(&self, x: f32, y: f32, _match_count: usize) -> Option<HitTarget> {
         let w = self.w as f32;
 
-        // Sport switcher sits in the title bar, ahead of standard caption controls.
-        if y >= 6.0 && y <= 42.0 {
-            let switcher_left = w - 394.0;
-            if x >= switcher_left && x < switcher_left + 116.0 {
-                return Some(HitTarget::CricketTab);
-            }
-            if x >= switcher_left + 116.0 && x < switcher_left + 232.0 {
-                return Some(HitTarget::FootballTab);
-            }
-        }
-
-        // Caption Buttons in Title Bar (Right-aligned, 54px wide each)
         if y >= 0.0 && y <= TITLE_BAR_HEIGHT {
-            // Standard Win11-sized caption targets, right aligned.
             if x >= (w - 46.0) && x <= w {
                 return Some(HitTarget::CloseButton);
             }
@@ -441,8 +544,22 @@ impl DashboardRenderer {
             if x >= (w - 138.0) && x < (w - 92.0) {
                 return Some(HitTarget::MinimizeButton);
             }
-            // Anywhere else in top bar is draggable
             return Some(HitTarget::TitleBar);
+        }
+
+        let (_, cricket, football) = self.sport_switcher_rects();
+        if y > TITLE_BAR_HEIGHT && y <= Self::page_content_top() {
+            if x >= cricket.left && x <= cricket.right && y >= cricket.top && y <= cricket.bottom {
+                return Some(HitTarget::CricketTab);
+            }
+            if x >= football.left
+                && x <= football.right
+                && y >= football.top
+                && y <= football.bottom
+            {
+                return Some(HitTarget::FootballTab);
+            }
+            return None;
         }
 
         for (index, rect) in &self.card_layout {
@@ -462,6 +579,7 @@ impl DashboardRenderer {
         pos: &POINT,
         matches: &[DiscoveredMatch],
         selected_id: &Option<String>,
+        loading: bool,
     ) -> Result<()> {
         let (w, h) = (self.w as f32, self.h as f32);
         self.scroll_offset = self.scroll_offset.min(self.max_scroll());
@@ -470,106 +588,268 @@ impl DashboardRenderer {
         self.rt.Clear(None);
 
         // Window surface: a quiet neutral foundation with a single restrained accent role.
-        let full_rect = D2D_RECT_F { left: 0.0, top: 0.0, right: w, bottom: h };
-        let rr = D2D1_ROUNDED_RECT { rect: full_rect, radiusX: 16.0, radiusY: 16.0 };
+        let full_rect = D2D_RECT_F {
+            left: 0.0,
+            top: 0.0,
+            right: w,
+            bottom: h,
+        };
+        let rr = D2D1_ROUNDED_RECT {
+            rect: full_rect,
+            radiusX: 16.0,
+            radiusY: 16.0,
+        };
         self.rt.FillRoundedRectangle(&rr, &self.brushes.bg);
-        self.rt.DrawRoundedRectangle(&rr, &self.brushes.border, 1.2, None);
+        self.rt
+            .DrawRoundedRectangle(&rr, &self.brushes.border, 1.2, None);
 
         // Title bar header.
-        let header_rect = D2D_RECT_F { left: 1.0, top: 1.0, right: w - 1.0, bottom: TITLE_BAR_HEIGHT };
-        let header_rr = D2D1_ROUNDED_RECT { rect: header_rect, radiusX: 15.0, radiusY: 15.0 };
-        self.rt.FillRoundedRectangle(&header_rr, &self.brushes.header_bg);
+        let header_rect = D2D_RECT_F {
+            left: 1.0,
+            top: 1.0,
+            right: w - 1.0,
+            bottom: TITLE_BAR_HEIGHT,
+        };
+        let header_rr = D2D1_ROUNDED_RECT {
+            rect: header_rect,
+            radiusX: 15.0,
+            radiusY: 15.0,
+        };
+        self.rt
+            .FillRoundedRectangle(&header_rr, &self.brushes.header_bg);
 
         // Divider below title bar
         self.rt.DrawLine(
-            windows::Win32::Graphics::Direct2D::Common::D2D_POINT_2F { x: 0.0, y: TITLE_BAR_HEIGHT },
-            windows::Win32::Graphics::Direct2D::Common::D2D_POINT_2F { x: w, y: TITLE_BAR_HEIGHT },
+            windows::Win32::Graphics::Direct2D::Common::D2D_POINT_2F {
+                x: 0.0,
+                y: TITLE_BAR_HEIGHT,
+            },
+            windows::Win32::Graphics::Direct2D::Common::D2D_POINT_2F {
+                x: w,
+                y: TITLE_BAR_HEIGHT,
+            },
             &self.brushes.divider,
             1.0,
             None,
         );
 
-        let title_rect = D2D_RECT_F { left: 28.0, top: 0.0, right: w - 416.0, bottom: TITLE_BAR_HEIGHT };
-        self.fmt_app_title.text(&self.rt, "SportsPulse", &title_rect, &self.brushes.white);
-
-        // A familiar two-choice sport switcher keeps discovery focused without creating a
-        // separate settings surface. It is intentionally beside the app name, not in content.
-        let switcher_rect = D2D_RECT_F { left: w - 394.0, top: 6.0, right: w - 162.0, bottom: 42.0 };
-        let switcher_rr = D2D1_ROUNDED_RECT { rect: switcher_rect, radiusX: 8.0, radiusY: 8.0 };
-        self.rt.FillRoundedRectangle(&switcher_rr, &self.brushes.icon_box_bg);
-        self.rt.DrawRoundedRectangle(&switcher_rr, &self.brushes.border, 1.0, None);
-        let cricket_rect = D2D_RECT_F { left: switcher_rect.left + 3.0, top: 9.0, right: switcher_rect.left + 113.0, bottom: 39.0 };
-        let football_rect = D2D_RECT_F { left: switcher_rect.left + 119.0, top: 9.0, right: switcher_rect.right - 3.0, bottom: 39.0 };
-        for (sport, rect, label) in [
-            (DashboardSport::Cricket, cricket_rect, "CRICKET"),
-            (DashboardSport::Football, football_rect, "FOOTBALL"),
-        ] {
-            if self.active_sport == sport {
-                let tab_rr = D2D1_ROUNDED_RECT { rect, radiusX: 6.0, radiusY: 6.0 };
-                self.rt.FillRoundedRectangle(&tab_rr, &self.brushes.card_hover);
-                self.fmt_badge.text(&self.rt, label, &rect, &self.brushes.white);
-            } else {
-                self.fmt_badge.text(&self.rt, label, &rect, &self.brushes.dim);
-            }
-        }
+        let title_rect = D2D_RECT_F {
+            left: 28.0,
+            top: 0.0,
+            right: w - 148.0,
+            bottom: TITLE_BAR_HEIGHT,
+        };
+        self.fmt_app_title.text(
+            &self.rt,
+            "SportsPulse Dashboard",
+            &title_rect,
+            &self.brushes.white,
+        );
 
         // 3. Caption Buttons: Minimize (−), Maximize/Restore (□ / ❐), Close (✕)
         let btn_h = TITLE_BAR_HEIGHT;
 
         // Minimize button, drawn as geometry for consistent optical size at every DPI.
-        let min_rect = D2D_RECT_F { left: w - 136.0, top: 4.0, right: w - 94.0, bottom: btn_h - 4.0 };
-        let min_rr = D2D1_ROUNDED_RECT { rect: min_rect, radiusX: 7.0, radiusY: 7.0 };
+        let min_rect = D2D_RECT_F {
+            left: w - 136.0,
+            top: 4.0,
+            right: w - 94.0,
+            bottom: btn_h - 4.0,
+        };
+        let min_rr = D2D1_ROUNDED_RECT {
+            rect: min_rect,
+            radiusX: 7.0,
+            radiusY: 7.0,
+        };
         if self.min_hover {
-            self.rt.FillRoundedRectangle(&min_rr, &self.brushes.caption_btn_hover_bg);
+            self.rt
+                .FillRoundedRectangle(&min_rr, &self.brushes.caption_btn_hover_bg);
         }
-        let min_brush = if self.min_hover { &self.brushes.white } else { &self.brushes.dim };
+        let min_brush = if self.min_hover {
+            &self.brushes.white
+        } else {
+            &self.brushes.dim
+        };
         self.rt.DrawLine(
-            D2D_POINT_2F { x: w - 122.0, y: TITLE_BAR_HEIGHT / 2.0 },
-            D2D_POINT_2F { x: w - 108.0, y: TITLE_BAR_HEIGHT / 2.0 },
+            D2D_POINT_2F {
+                x: w - 122.0,
+                y: TITLE_BAR_HEIGHT / 2.0,
+            },
+            D2D_POINT_2F {
+                x: w - 108.0,
+                y: TITLE_BAR_HEIGHT / 2.0,
+            },
             min_brush,
             2.0,
             None,
         );
 
         // Maximize / restore button, a crisp square rather than a small font glyph.
-        let max_rect = D2D_RECT_F { left: w - 90.0, top: 4.0, right: w - 48.0, bottom: btn_h - 4.0 };
-        let max_rr = D2D1_ROUNDED_RECT { rect: max_rect, radiusX: 7.0, radiusY: 7.0 };
+        let max_rect = D2D_RECT_F {
+            left: w - 90.0,
+            top: 4.0,
+            right: w - 48.0,
+            bottom: btn_h - 4.0,
+        };
+        let max_rr = D2D1_ROUNDED_RECT {
+            rect: max_rect,
+            radiusX: 7.0,
+            radiusY: 7.0,
+        };
         if self.max_hover {
-            self.rt.FillRoundedRectangle(&max_rr, &self.brushes.caption_btn_hover_bg);
+            self.rt
+                .FillRoundedRectangle(&max_rr, &self.brushes.caption_btn_hover_bg);
         }
-        let max_brush = if self.max_hover { &self.brushes.white } else { &self.brushes.dim };
+        let max_brush = if self.max_hover {
+            &self.brushes.white
+        } else {
+            &self.brushes.dim
+        };
         let max_cx = w - 69.0;
         let max_cy = TITLE_BAR_HEIGHT / 2.0;
         self.rt.DrawRectangle(
-            &D2D_RECT_F { left: max_cx - 6.0, top: max_cy - 6.0, right: max_cx + 6.0, bottom: max_cy + 6.0 },
+            &D2D_RECT_F {
+                left: max_cx - 6.0,
+                top: max_cy - 6.0,
+                right: max_cx + 6.0,
+                bottom: max_cy + 6.0,
+            },
             max_brush,
             1.6,
             None,
         );
 
         // Close Button (✕) with Windows 11 Red Hover
-        let close_rect = D2D_RECT_F { left: w - 44.0, top: 4.0, right: w - 6.0, bottom: btn_h - 4.0 };
-        let close_rr = D2D1_ROUNDED_RECT { rect: close_rect, radiusX: 8.0, radiusY: 8.0 };
+        let close_rect = D2D_RECT_F {
+            left: w - 44.0,
+            top: 4.0,
+            right: w - 6.0,
+            bottom: btn_h - 4.0,
+        };
+        let close_rr = D2D1_ROUNDED_RECT {
+            rect: close_rect,
+            radiusX: 8.0,
+            radiusY: 8.0,
+        };
         if self.close_hover {
-            self.rt.FillRoundedRectangle(&close_rr, &self.brushes.close_btn_hover_bg);
-            self.fmt_caption_close.text(&self.rt, "✕", &close_rect, &self.brushes.white);
+            self.rt
+                .FillRoundedRectangle(&close_rr, &self.brushes.close_btn_hover_bg);
+            self.fmt_caption_close
+                .text(&self.rt, "✕", &close_rect, &self.brushes.white);
         } else {
-            self.fmt_caption_close.text(&self.rt, "✕", &close_rect, &self.brushes.dim);
+            self.fmt_caption_close
+                .text(&self.rt, "✕", &close_rect, &self.brushes.dim);
         }
 
-        // The content deliberately starts with live/upcoming state instead of repeating a
-        // generic "match discovery" heading. It makes the next decision obvious at a glance.
-        let sport_matches: Vec<(usize, &DiscoveredMatch)> = matches.iter().enumerate()
+        // Page header: title on the left, cricket/football switcher on the right.
+        let icon_rect = D2D_RECT_F {
+            left: CARD_LEFT,
+            top: TITLE_BAR_HEIGHT + 14.0,
+            right: CARD_LEFT + 52.0,
+            bottom: TITLE_BAR_HEIGHT + PAGE_HEADER_HEIGHT - 14.0,
+        };
+        self.fmt_icon
+            .text(&self.rt, "🏏 ⚽", &icon_rect, &self.brushes.white);
+        let page_title_rect = D2D_RECT_F {
+            left: CARD_LEFT + 58.0,
+            top: TITLE_BAR_HEIGHT,
+            right: w - CARD_RIGHT - SWITCHER_W - 16.0,
+            bottom: TITLE_BAR_HEIGHT + PAGE_HEADER_HEIGHT,
+        };
+        self.fmt_page_title.text(
+            &self.rt,
+            "SportsPulse Dashboard",
+            &page_title_rect,
+            &self.brushes.white,
+        );
+
+        let (switcher_rect, cricket_rect, football_rect) = self.sport_switcher_rects();
+        let switcher_rr = D2D1_ROUNDED_RECT {
+            rect: switcher_rect,
+            radiusX: 8.0,
+            radiusY: 8.0,
+        };
+        self.rt
+            .FillRoundedRectangle(&switcher_rr, &self.brushes.icon_box_bg);
+        self.rt
+            .DrawRoundedRectangle(&switcher_rr, &self.brushes.border, 1.0, None);
+        for (sport, rect, label, hovered) in [
+            (
+                DashboardSport::Cricket,
+                cricket_rect,
+                "CRICKET",
+                self.cricket_hover,
+            ),
+            (
+                DashboardSport::Football,
+                football_rect,
+                "FOOTBALL",
+                self.football_hover,
+            ),
+        ] {
+            if self.active_sport == sport {
+                let tab_rr = D2D1_ROUNDED_RECT {
+                    rect,
+                    radiusX: 6.0,
+                    radiusY: 6.0,
+                };
+                self.rt
+                    .FillRoundedRectangle(&tab_rr, &self.brushes.card_hover);
+                self.fmt_badge
+                    .text(&self.rt, label, &rect, &self.brushes.white);
+            } else if hovered {
+                let tab_rr = D2D1_ROUNDED_RECT {
+                    rect,
+                    radiusX: 6.0,
+                    radiusY: 6.0,
+                };
+                self.rt
+                    .FillRoundedRectangle(&tab_rr, &self.brushes.action_bg);
+                self.fmt_badge
+                    .text(&self.rt, label, &rect, &self.brushes.white);
+            } else {
+                self.fmt_badge
+                    .text(&self.rt, label, &rect, &self.brushes.dim);
+            }
+        }
+
+        self.rt.DrawLine(
+            D2D_POINT_2F {
+                x: CARD_LEFT,
+                y: Self::page_content_top(),
+            },
+            D2D_POINT_2F {
+                x: w - CARD_RIGHT,
+                y: Self::page_content_top(),
+            },
+            &self.brushes.divider,
+            1.0,
+            None,
+        );
+
+        let sport_matches: Vec<(usize, &DiscoveredMatch)> = matches
+            .iter()
+            .enumerate()
             .filter(|(_, m)| self.active_sport.matches(&m.sport))
             .collect();
-        if sport_matches.is_empty() {
+
+        if loading {
             self.scroll_offset = 0;
             self.content_height = 0.0;
-            let empty_rect = D2D_RECT_F { left: 32.0, top: 280.0, right: w - 32.0, bottom: 360.0 };
-            self.fmt_subtitle.text(
+            let content_top = Self::page_content_top();
+            let cx = w / 2.0;
+            let cy = content_top + (h - content_top) * 0.42;
+            self.draw_spinner(cx, cy);
+            let text_rect = D2D_RECT_F {
+                left: 32.0,
+                top: cy + SPINNER_RADIUS + 16.0,
+                right: w - 32.0,
+                bottom: cy + SPINNER_RADIUS + 48.0,
+            };
+            self.fmt_loading.text(
                 &self.rt,
-                &format!("No {} fixtures right now.", self.active_sport.label()),
-                &empty_rect,
+                "FETCHING MATCHES...",
+                &text_rect,
                 &self.brushes.subtle,
             );
         } else {
@@ -582,61 +862,152 @@ impl DashboardRenderer {
                     push_to_league_group(&mut upcoming_groups, &m.league_name, index);
                 }
             }
+            live_groups.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            upcoming_groups.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
 
-            let max_cols = if w >= 1500.0 { 3 } else if w >= 900.0 { 2 } else { 1 };
+            let max_cols = if w >= 1500.0 {
+                3
+            } else if w >= 900.0 {
+                2
+            } else {
+                1
+            };
             let gap = 16.0;
-            let content_top = TITLE_BAR_HEIGHT + 16.0;
+            let content_top = Self::page_content_top();
             let content_bottom = h - CONTENT_BOTTOM_GUTTER;
             let scroll_px = self.scroll_offset as f32 * SCROLL_STEP;
             let mut y = ITEM_TOP_START - scroll_px;
-            let clip = D2D_RECT_F { left: 1.0, top: content_top, right: w - 1.0, bottom: content_bottom };
-            self.rt.PushAxisAlignedClip(&clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            let clip = D2D_RECT_F {
+                left: 1.0,
+                top: content_top + 1.0,
+                right: w - 1.0,
+                bottom: content_bottom,
+            };
+            self.rt
+                .PushAxisAlignedClip(&clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
             for (is_live, groups) in [(true, &live_groups), (false, &upcoming_groups)] {
+                let section_rect = D2D_RECT_F {
+                    left: CARD_LEFT,
+                    top: y,
+                    right: w - CARD_RIGHT,
+                    bottom: y + 28.0,
+                };
+                let section_label = if is_live {
+                    "●  LIVE MATCHES"
+                } else {
+                    "◷  UPCOMING MATCHES"
+                };
+                let section_brush = if is_live {
+                    &self.brushes.live_badge_text
+                } else {
+                    &self.brushes.blue_badge_text
+                };
+                self.fmt_eyebrow
+                    .text(&self.rt, section_label, &section_rect, section_brush);
+                y += 40.0;
+
                 if groups.is_empty() {
+                    let empty_rect = D2D_RECT_F {
+                        left: CARD_LEFT,
+                        top: y,
+                        right: w - CARD_RIGHT,
+                        bottom: y + EMPTY_CARD_H,
+                    };
+                    let empty_rr = D2D1_ROUNDED_RECT {
+                        rect: empty_rect,
+                        radiusX: 10.0,
+                        radiusY: 10.0,
+                    };
+                    self.rt
+                        .FillRoundedRectangle(&empty_rr, &self.brushes.header_bg);
+                    self.rt
+                        .DrawRoundedRectangle(&empty_rr, &self.brushes.border, 1.0, None);
+                    let empty_copy = if is_live {
+                        "No live matches currently"
+                    } else {
+                        "No upcoming matches currently"
+                    };
+                    self.fmt_empty
+                        .text(&self.rt, empty_copy, &empty_rect, &self.brushes.subtle);
+                    y += EMPTY_CARD_H + 28.0;
                     continue;
                 }
-
-                let section_rect = D2D_RECT_F { left: CARD_LEFT, top: y, right: w - CARD_RIGHT, bottom: y + 28.0 };
-                let section_label = if is_live { "●  LIVE MATCHES" } else { "◷  UPCOMING MATCHES" };
-                let section_brush = if is_live { &self.brushes.live_badge_text } else { &self.brushes.blue_badge_text };
-                self.fmt_eyebrow.text(&self.rt, section_label, &section_rect, section_brush);
-                y += 40.0;
 
                 for group in groups {
                     // The league marker is intentionally separate from its label. This avoids
                     // the bar colliding with the first letter at every window size.
-                    let league_marker = D2D_RECT_F { left: CARD_LEFT, top: y + 4.0, right: CARD_LEFT + 3.0, bottom: y + 26.0 };
-                    let league_rect = D2D_RECT_F { left: CARD_LEFT + 16.0, top: y, right: w - CARD_RIGHT, bottom: y + 30.0 };
-                    let league_brush = if is_live { &self.brushes.live_badge_text } else { &self.brushes.blue_badge_text };
+                    let league_marker = D2D_RECT_F {
+                        left: CARD_LEFT,
+                        top: y + 4.0,
+                        right: CARD_LEFT + 3.0,
+                        bottom: y + 26.0,
+                    };
+                    let league_rect = D2D_RECT_F {
+                        left: CARD_LEFT + 16.0,
+                        top: y,
+                        right: w - CARD_RIGHT,
+                        bottom: y + 30.0,
+                    };
+                    let league_brush = if is_live {
+                        &self.brushes.live_badge_text
+                    } else {
+                        &self.brushes.blue_badge_text
+                    };
                     self.rt.FillRectangle(&league_marker, league_brush);
-                    self.fmt_eyebrow.text(&self.rt, &group.name.to_uppercase(), &league_rect, &self.brushes.dim);
+                    self.fmt_eyebrow.text(
+                        &self.rt,
+                        &group.name.to_uppercase(),
+                        &league_rect,
+                        &self.brushes.dim,
+                    );
                     y += 40.0;
 
                     let group_cols = max_cols.min(group.match_indices.len().max(1));
                     let card_height = if is_live { 74.0 } else { ITEM_HEIGHT };
-                    let card_width = (w - CARD_LEFT - CARD_RIGHT - gap * (group_cols as f32 - 1.0)) / group_cols as f32;
+                    let card_width = (w - CARD_LEFT - CARD_RIGHT - gap * (group_cols as f32 - 1.0))
+                        / group_cols as f32;
                     for (position, index) in group.match_indices.iter().copied().enumerate() {
                         let row = position / group_cols;
                         let column = position % group_cols;
                         let top = y + row as f32 * (card_height + ITEM_SPACING);
                         let left = CARD_LEFT + column as f32 * (card_width + gap);
-                        let item_rect = D2D_RECT_F { left, top, right: left + card_width, bottom: top + card_height };
+                        let item_rect = D2D_RECT_F {
+                            left,
+                            top,
+                            right: left + card_width,
+                            bottom: top + card_height,
+                        };
                         self.card_layout.push((index, item_rect));
-                        let item_rr = D2D1_ROUNDED_RECT { rect: item_rect, radiusX: 10.0, radiusY: 10.0 };
+                        let item_rr = D2D1_ROUNDED_RECT {
+                            rect: item_rect,
+                            radiusX: 10.0,
+                            radiusY: 10.0,
+                        };
                         let m = &matches[index];
-                        let is_selected = selected_id.as_ref().map_or(false, |id| id == &m.match_id);
+                        let is_selected =
+                            selected_id.as_ref().map_or(false, |id| id == &m.match_id);
                         let is_hovered = self.hover_index == Some(index);
 
                         if is_selected {
-                            self.rt.FillRoundedRectangle(&item_rr, &self.brushes.card_active);
-                            self.rt.DrawRoundedRectangle(&item_rr, &self.brushes.active_border, 1.6, None);
+                            self.rt
+                                .FillRoundedRectangle(&item_rr, &self.brushes.card_active);
+                            self.rt.DrawRoundedRectangle(
+                                &item_rr,
+                                &self.brushes.active_border,
+                                1.6,
+                                None,
+                            );
                         } else if is_hovered {
-                            self.rt.FillRoundedRectangle(&item_rr, &self.brushes.card_hover);
-                            self.rt.DrawRoundedRectangle(&item_rr, &self.brushes.border, 1.2, None);
+                            self.rt
+                                .FillRoundedRectangle(&item_rr, &self.brushes.card_hover);
+                            self.rt
+                                .DrawRoundedRectangle(&item_rr, &self.brushes.border, 1.2, None);
                         } else {
-                            self.rt.FillRoundedRectangle(&item_rr, &self.brushes.card_bg);
-                            self.rt.DrawRoundedRectangle(&item_rr, &self.brushes.border, 1.0, None);
+                            self.rt
+                                .FillRoundedRectangle(&item_rr, &self.brushes.card_bg);
+                            self.rt
+                                .DrawRoundedRectangle(&item_rr, &self.brushes.border, 1.0, None);
                         }
 
                         let action_rect = D2D_RECT_F {
@@ -645,36 +1016,80 @@ impl DashboardRenderer {
                             right: item_rect.right - 16.0,
                             bottom: top + (card_height + 36.0) / 2.0,
                         };
-                        let action_rr = D2D1_ROUNDED_RECT { rect: action_rect, radiusX: 7.0, radiusY: 7.0 };
+                        let action_rr = D2D1_ROUNDED_RECT {
+                            rect: action_rect,
+                            radiusX: 7.0,
+                            radiusY: 7.0,
+                        };
                         let action_hovered = self.action_hover_index == Some(index);
                         let (action_bg, action_border, action_text, action_label) = if is_selected {
                             (
-                                if action_hovered { &self.brushes.action_danger_hover_bg } else { &self.brushes.action_danger_bg },
+                                if action_hovered {
+                                    &self.brushes.action_danger_hover_bg
+                                } else {
+                                    &self.brushes.action_danger_bg
+                                },
                                 &self.brushes.action_danger_border,
                                 &self.brushes.action_danger_text,
                                 "UNTRACK",
                             )
                         } else {
                             (
-                                if action_hovered { &self.brushes.action_hover_bg } else { &self.brushes.action_bg },
+                                if action_hovered {
+                                    &self.brushes.action_hover_bg
+                                } else {
+                                    &self.brushes.action_bg
+                                },
                                 &self.brushes.action_border,
                                 &self.brushes.action_text,
                                 "TRACK",
                             )
                         };
                         self.rt.FillRoundedRectangle(&action_rr, action_bg);
-                        self.rt.DrawRoundedRectangle(&action_rr, action_border, 1.0, None);
-                        self.fmt_badge.text(&self.rt, action_label, &action_rect, action_text);
+                        self.rt
+                            .DrawRoundedRectangle(&action_rr, action_border, 1.0, None);
+                        self.fmt_badge
+                            .text(&self.rt, action_label, &action_rect, action_text);
 
                         let text_right = action_rect.left - 20.0;
                         if is_live {
-                            let title_rect = D2D_RECT_F { left: left + 24.0, top: top + 18.0, right: text_right, bottom: top + 54.0 };
-                            self.fmt_item_title.text(&self.rt, &m.title, &title_rect, &self.brushes.white);
+                            let title_rect = D2D_RECT_F {
+                                left: left + 24.0,
+                                top: top + 18.0,
+                                right: text_right,
+                                bottom: top + 54.0,
+                            };
+                            self.fmt_item_title.text(
+                                &self.rt,
+                                &m.title,
+                                &title_rect,
+                                &self.brushes.white,
+                            );
                         } else {
-                            let title_rect = D2D_RECT_F { left: left + 24.0, top: top + 14.0, right: text_right, bottom: top + 48.0 };
-                            let time_rect = D2D_RECT_F { left: left + 24.0, top: top + 52.0, right: text_right, bottom: top + 78.0 };
-                            self.fmt_item_title.text(&self.rt, &m.title, &title_rect, &self.brushes.white);
-                            self.fmt_item_sub.text(&self.rt, &format_upcoming_time(&m.start_time), &time_rect, &self.brushes.dim);
+                            let title_rect = D2D_RECT_F {
+                                left: left + 24.0,
+                                top: top + 14.0,
+                                right: text_right,
+                                bottom: top + 48.0,
+                            };
+                            let time_rect = D2D_RECT_F {
+                                left: left + 24.0,
+                                top: top + 52.0,
+                                right: text_right,
+                                bottom: top + 78.0,
+                            };
+                            self.fmt_item_title.text(
+                                &self.rt,
+                                &m.title,
+                                &title_rect,
+                                &self.brushes.white,
+                            );
+                            self.fmt_item_sub.text(
+                                &self.rt,
+                                &format_upcoming_time(&m.start_time),
+                                &time_rect,
+                                &self.brushes.dim,
+                            );
                         }
                     }
                     let rows = (group.match_indices.len() + group_cols - 1) / group_cols;
@@ -691,12 +1106,33 @@ impl DashboardRenderer {
                 let track_bottom = content_bottom;
                 let track_height = (track_bottom - track_top).max(1.0);
                 let viewport = (content_bottom - content_top).max(1.0);
-                let thumb_height = (track_height * (viewport / self.content_height)).clamp(32.0, track_height);
-                let thumb_top = track_top + (track_height - thumb_height)
-                    * (self.scroll_offset as f32 / self.max_scroll().max(1) as f32);
-                let track = D2D1_ROUNDED_RECT { rect: D2D_RECT_F { left: w - 15.0, top: track_top, right: w - 10.0, bottom: track_bottom }, radiusX: 2.5, radiusY: 2.5 };
-                let thumb = D2D1_ROUNDED_RECT { rect: D2D_RECT_F { left: w - 15.0, top: thumb_top, right: w - 10.0, bottom: thumb_top + thumb_height }, radiusX: 2.5, radiusY: 2.5 };
-                self.rt.FillRoundedRectangle(&track, &self.brushes.icon_box_bg);
+                let thumb_height =
+                    (track_height * (viewport / self.content_height)).clamp(32.0, track_height);
+                let thumb_top = track_top
+                    + (track_height - thumb_height)
+                        * (self.scroll_offset as f32 / self.max_scroll().max(1) as f32);
+                let track = D2D1_ROUNDED_RECT {
+                    rect: D2D_RECT_F {
+                        left: w - 15.0,
+                        top: track_top,
+                        right: w - 10.0,
+                        bottom: track_bottom,
+                    },
+                    radiusX: 2.5,
+                    radiusY: 2.5,
+                };
+                let thumb = D2D1_ROUNDED_RECT {
+                    rect: D2D_RECT_F {
+                        left: w - 15.0,
+                        top: thumb_top,
+                        right: w - 10.0,
+                        bottom: thumb_top + thumb_height,
+                    },
+                    radiusX: 2.5,
+                    radiusY: 2.5,
+                };
+                self.rt
+                    .FillRoundedRectangle(&track, &self.brushes.icon_box_bg);
                 self.rt.FillRoundedRectangle(&thumb, &self.brushes.subtle);
             }
         }
@@ -706,10 +1142,14 @@ impl DashboardRenderer {
         let row_pitch = (self.w * 4) as usize;
         let total_bytes = row_pitch * self.h as usize;
         let mut buf = vec![0u8; total_bytes];
-        self.wic.CopyPixels(std::ptr::null(), row_pitch as u32, &mut buf)?;
+        self.wic
+            .CopyPixels(std::ptr::null(), row_pitch as u32, &mut buf)?;
         std::ptr::copy_nonoverlapping(buf.as_ptr(), self.bits as *mut u8, total_bytes);
 
-        let size = SIZE { cx: self.w, cy: self.h };
+        let size = SIZE {
+            cx: self.w,
+            cy: self.h,
+        };
         let src_pt = POINT { x: 0, y: 0 };
         let blend = BLENDFUNCTION {
             BlendOp: AC_SRC_OVER as u8,
@@ -738,12 +1178,16 @@ impl DashboardRenderer {
         min: bool,
         max: bool,
         close: bool,
+        cricket: bool,
+        football: bool,
     ) {
         self.hover_index = index;
         self.action_hover_index = action_index;
         self.min_hover = min;
         self.max_hover = max;
         self.close_hover = close;
+        self.cricket_hover = cricket;
+        self.football_hover = football;
     }
 
     pub fn scroll_by(&mut self, rows: isize, _match_count: usize) {
@@ -753,7 +1197,7 @@ impl DashboardRenderer {
     }
 
     fn max_scroll(&self) -> usize {
-        let viewport = (self.h as f32 - TITLE_BAR_HEIGHT - 16.0 - CONTENT_BOTTOM_GUTTER).max(1.0);
+        let viewport = (self.h as f32 - Self::page_content_top() - CONTENT_BOTTOM_GUTTER).max(1.0);
         ((self.content_height - viewport).max(0.0) / SCROLL_STEP).ceil() as usize
     }
 }

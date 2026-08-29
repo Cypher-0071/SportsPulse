@@ -8,8 +8,8 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, LoadIconW, SetForegroundWindow,
-    TrackPopupMenuEx, HICON, HMENU, IDI_APPLICATION, MF_SEPARATOR, MF_STRING,
-    TPM_BOTTOMALIGN, TPM_RIGHTALIGN,
+    TrackPopupMenuEx, HICON, HMENU, IDI_APPLICATION, MF_SEPARATOR, MF_STRING, TPM_BOTTOMALIGN,
+    TPM_RIGHTALIGN,
 };
 
 pub const WM_APP_TRAY: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 2;
@@ -66,9 +66,24 @@ impl TrayIcon {
         let w_untrack: Vec<u16> = "Untrack Match\0".encode_utf16().collect();
         let w_quit: Vec<u16> = "Exit SportsPulse\0".encode_utf16().collect();
 
-        let _ = AppendMenuW(hmenu, MF_STRING, ID_TRAY_TOGGLE_SCORE, PCWSTR(w_toggle.as_ptr()));
-        let _ = AppendMenuW(hmenu, MF_STRING, ID_TRAY_OPEN_DASHBOARD, PCWSTR(w_dash.as_ptr()));
-        let _ = AppendMenuW(hmenu, MF_STRING, ID_TRAY_UNTRACK_MATCH, PCWSTR(w_untrack.as_ptr()));
+        let _ = AppendMenuW(
+            hmenu,
+            MF_STRING,
+            ID_TRAY_TOGGLE_SCORE,
+            PCWSTR(w_toggle.as_ptr()),
+        );
+        let _ = AppendMenuW(
+            hmenu,
+            MF_STRING,
+            ID_TRAY_OPEN_DASHBOARD,
+            PCWSTR(w_dash.as_ptr()),
+        );
+        let _ = AppendMenuW(
+            hmenu,
+            MF_STRING,
+            ID_TRAY_UNTRACK_MATCH,
+            PCWSTR(w_untrack.as_ptr()),
+        );
         let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(hmenu, MF_STRING, ID_TRAY_QUIT, PCWSTR(w_quit.as_ptr()));
 
