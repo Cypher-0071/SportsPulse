@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use windows::core::*;
-use windows::Win32::Foundation::{BOOL, COLORREF, HWND, POINT, SIZE};
+use windows::Win32::Foundation::{BOOL, COLORREF, E_FAIL, HWND, POINT, SIZE};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_POINT_2F, D2D_RECT_F,
 };
@@ -162,19 +162,21 @@ pub(crate) fn has_word(upper_title: &str, word: &str) -> bool {
 /// NOTE: IWICImagingFactory has no Send+Sync impl in windows 0.58, so it cannot
 /// live in a `static OnceLock`; each renderer keeps one WIC factory for its own
 /// lifetime and reuses it across resizes instead.
-static D2D_FACTORY: OnceLock<ID2D1Factory> = OnceLock::new();
-static DWRITE_FACTORY: OnceLock<IDWriteFactory> = OnceLock::new();
+static D2D_FACTORY: OnceLock<Option<ID2D1Factory>> = OnceLock::new();
+static DWRITE_FACTORY: OnceLock<Option<IDWriteFactory>> = OnceLock::new();
 
 pub(crate) fn d2d_factory() -> Result<ID2D1Factory> {
     D2D_FACTORY
-        .get_or_try_init(|| unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None) })
-        .map(|f| f.clone())
+        .get_or_init(|| unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None).ok() })
+        .clone()
+        .ok_or_else(|| E_FAIL.into())
 }
 
 pub(crate) fn dwrite_factory() -> Result<IDWriteFactory> {
     DWRITE_FACTORY
-        .get_or_try_init(|| unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) })
-        .map(|f| f.clone())
+        .get_or_init(|| unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).ok() })
+        .clone()
+        .ok_or_else(|| E_FAIL.into())
 }
 
 pub(crate) fn software_rt_props() -> D2D1_RENDER_TARGET_PROPERTIES {

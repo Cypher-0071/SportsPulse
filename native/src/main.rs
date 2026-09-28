@@ -1307,7 +1307,7 @@ fn spawn_engine_worker(
         let c = cache.clone();
         let ms = match_state.clone();
         rt.spawn(async move {
-            engine::fetcher::start_polling(c, ms, tx).await;
+            sportspulse::engine::fetcher::start_polling(c, ms, tx).await;
         });
 
         // Event listener bridge to Win32 messages
@@ -1327,28 +1327,36 @@ fn spawn_engine_worker(
                                 match next {
                                     AppEvent::ScoreChanged(_) => continue,
                                     // Non-score events must not be swallowed: post them now.
-                                    AppEvent::MatchEvent(_) => post_checked(
-                                        hwnd,
-                                        WM_APP_MATCH_EVENT,
-                                        POST_RETRY_EVENT_TIMER,
-                                    ),
-                                    AppEvent::MatchesDiscovered(_) => post_checked(
-                                        hwnd,
-                                        WM_APP_MATCHES_DISCOVERED,
-                                        POST_RETRY_DISCOVERED_TIMER,
-                                    ),
+                                    AppEvent::MatchEvent(_) => unsafe {
+                                        post_checked(
+                                            hwnd,
+                                            WM_APP_MATCH_EVENT,
+                                            POST_RETRY_EVENT_TIMER,
+                                        )
+                                    },
+                                    AppEvent::MatchesDiscovered(_) => unsafe {
+                                        post_checked(
+                                            hwnd,
+                                            WM_APP_MATCHES_DISCOVERED,
+                                            POST_RETRY_DISCOVERED_TIMER,
+                                        )
+                                    },
                                 }
                             }
-                            post_checked(hwnd, WM_APP_SCORE_UPDATE, POST_RETRY_SCORE_TIMER);
+                            unsafe {
+                                post_checked(hwnd, WM_APP_SCORE_UPDATE, POST_RETRY_SCORE_TIMER);
+                            }
                         }
-                        AppEvent::MatchEvent(_) => {
+                        AppEvent::MatchEvent(_) => unsafe {
                             post_checked(hwnd, WM_APP_MATCH_EVENT, POST_RETRY_EVENT_TIMER)
-                        }
-                        AppEvent::MatchesDiscovered(_) => post_checked(
-                            hwnd,
-                            WM_APP_MATCHES_DISCOVERED,
-                            POST_RETRY_DISCOVERED_TIMER,
-                        ),
+                        },
+                        AppEvent::MatchesDiscovered(_) => unsafe {
+                            post_checked(
+                                hwnd,
+                                WM_APP_MATCHES_DISCOVERED,
+                                POST_RETRY_DISCOVERED_TIMER,
+                            )
+                        },
                     }
                 }
             }
