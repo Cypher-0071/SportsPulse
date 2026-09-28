@@ -70,25 +70,25 @@ fn capped_backoff(failures: u32) -> Duration {
 async fn fetch_json_capped(client: &Client, url: &str) -> Option<serde_json::Value> {
     let resp = match client.get(url).send().await {
         Ok(r) => r,
-        Err(e) => {
+        Err(_e) => {
             #[cfg(debug_assertions)]
-            eprintln!("[WARN] scoreboard request failed: {}", e);
+            eprintln!("[WARN] scoreboard request failed: {}", _e);
             return None;
         }
     };
     let resp = match resp.error_for_status() {
         Ok(r) => r,
-        Err(e) => {
+        Err(_e) => {
             #[cfg(debug_assertions)]
-            eprintln!("[WARN] scoreboard HTTP error: {}", e);
+            eprintln!("[WARN] scoreboard HTTP error: {}", _e);
             return None;
         }
     };
     let bytes = match resp.bytes().await {
         Ok(b) => b,
-        Err(e) => {
+        Err(_e) => {
             #[cfg(debug_assertions)]
-            eprintln!("[WARN] scoreboard body read failed: {}", e);
+            eprintln!("[WARN] scoreboard body read failed: {}", _e);
             return None;
         }
     };
@@ -102,9 +102,9 @@ async fn fetch_json_capped(client: &Client, url: &str) -> Option<serde_json::Val
     }
     match serde_json::from_slice::<serde_json::Value>(&bytes) {
         Ok(v) => Some(v),
-        Err(e) => {
+        Err(_e) => {
             #[cfg(debug_assertions)]
-            eprintln!("[WARN] scoreboard JSON parse failed: {}", e);
+            eprintln!("[WARN] scoreboard JSON parse failed: {}", _e);
             None
         }
     }
