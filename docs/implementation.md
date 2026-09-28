@@ -1,4 +1,6 @@
-# 🛠 SportsPulse — Development Implementation Plan
+# 🛠 SportsPulse — Development Implementation Plan (ARCHIVED — Tauri phases 1-7)
+
+> Native Win32 cutover is canonical. This Tauri plan is preserved for history. Native M0-M8 (scaffold/pump/Tokio → Direct2D scoreboard → layered ULW → hotkey/position → tray → live pipeline → popups → dashboard → DPI/polish) supersedes it. See README.md and docs/techdebt.md.
 
 This document outlines the multi-phase implementation roadmap for building **SportsPulse**.
 

@@ -2,7 +2,11 @@
 name = "sportspulse"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.75"
 description = "SportsPulse native Win32 scoreboard (windows-rs rewrite)"
+
+[features]
+dev-bins = []
 
 [lib]
 name = "sportspulse"
@@ -15,16 +19,26 @@ path = "src/main.rs"
 [[bin]]
 name = "sptest"
 path = "src/bin_test.rs"
+required-features = ["dev-bins"]
 
 [[bin]]
 name = "redbox"
 path = "src/bin_redbox.rs"
+required-features = ["dev-bins"]
 
 [[bin]]
 name = "spbench"
 path = "src/bin_benchmark.rs"
+required-features = ["dev-bins"]
 
 [dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = "0.4"
+
+[target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Foundation_Numerics",
     "Win32_Foundation",
@@ -45,13 +59,11 @@ windows = { version = "0.58", features = [
     "Win32_UI_Shell",
     "Win32_UI_Controls",
 ] }
-tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "default-tls"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-chrono = "0.4"
 
 [profile.release]
 opt-level = "z"
 lto = true
 strip = true
+
+[lints.clippy]
+all = "warn"

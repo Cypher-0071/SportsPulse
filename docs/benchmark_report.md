@@ -2,6 +2,10 @@
 ## Pure Native Win32 (`windows-rs` + Direct2D) vs. Tauri v2 (Chromium Baseline)
 
 > **Measurement Context**: Comparison between the original Tauri v2 implementation (measured on `main` at base commit `b7900ef`) and the pure native Win32 rewrite on the `native-win32` branch.
+>
+> All numbers below are single-sample, indicative measurements intended for
+> head-to-head comparison, not statistical claims (same disclaimer style as
+> `docs/benchmark_tauri_baseline.md`).
 
 ---
 
@@ -18,7 +22,7 @@ By eliminating Microsoft Edge WebView2 and replacing the entire Chromium multi-p
 
 ---
 
-## 2. Comprehensive Head-to-Head Comparison
+## 2. Comprehensive Head-to-Head Comparison (indicative, single-sample)
 
 | Benchmark Metric | Tauri v2 Baseline | Native Win32 Rewrite | Difference / Impact |
 |---|---|---|---|
@@ -28,6 +32,7 @@ By eliminating Microsoft Edge WebView2 and replacing the entire Chromium multi-p
 | **Physical Working Set (Shown)** | **794.1 MB** | **22.6 MB** | **-771.5 MB (-97.2%)** |
 | **Private Commit (Idle Background)** | **270.9 MB** | **7.2 MB** | **-263.7 MB (-97.3%)** |
 | **Private Commit (Dashboard Active)** | **~350.0 MB** | **12.4 MB** | **-337.6 MB (-96.5%)** |
+| *(dashboard-active rows are indicative single samples)* | | | |
 | **Cold Startup Latency (to 1st Window)** | **442.0 ms** | **28.5 ms** | **15.5x faster startup** |
 | **Release Binary Size (`.exe`)** | **12.8 MB** | **1.75 MB** | **-11.05 MB (-86.3%)** |
 | **Average Frame Rasterization Time** | ~16.6 ms (WebView 60 FPS cap) | **0.38 ms (380 µs)** | **~43x faster rendering** |
@@ -57,7 +62,7 @@ Total Footprint: 12 processes, 394.8 MB Private Commit, 794.1 MB Working Set
 sportspulse.exe (Single Standalone Process)         ~9.8 MB priv
   ├── Thread 1: Main Win32 UI Message Pump (GetMessageW / DispatchMessageW)
   │     ├── Main Scoreboard Layered Window (Direct2D + DirectWrite + WIC + GDI ULW)
-  │     ├── Match Discovery Dashboard (1060×820 Responsive Direct2D surface)
+  │     ├── Match Discovery Dashboard (1120×760 Responsive Direct2D surface)
   │     ├── Event Mini-Popup Layered Window (WS_EX_TOPMOST auto-dismissing window)
   │     └── System Tray Icon & Global Hotkey (Shell_NotifyIconW + RegisterHotKey)
   └── Threads 2-4: Tokio Multi-Threaded Engine Worker Pool
@@ -73,7 +78,7 @@ Total Footprint: 1 process, 9.8 MB Private Commit, 22.6 MB Working Set
 
 1. **Elimination of Chromium V8 & Blink**:
    - In Tauri v2, every visible window spawns an isolated Chromium rendering sandbox with its own JavaScript V8 runtime, DOM tree, GPU composition worker, and IPC channels, consuming ~100–140 MB per window.
-   - In native Win32, rendering is done directly onto a 32bpp premultiplied BGRA bitmap in CPU/Direct2D memory, requiring only the raw pixel memory (`width × height × 4 bytes` ≈ 2.8 MB for a 1060×820 buffer).
+    - In native Win32, rendering is done directly onto a 32bpp premultiplied BGRA bitmap in CPU/Direct2D memory, requiring only the raw pixel memory (`width × height × 4 bytes` ≈ 3.4 MB for a 1120×760 buffer).
 
 2. **Sub-30ms Instant Startup**:
    - Tauri v2 requires cold-starting WebView2 runtime components, initializing IPC communication bridges, parsing HTML/CSS/JS bundles, and booting Chromium's Blink rendering engine.

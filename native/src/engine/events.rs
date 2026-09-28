@@ -1,4 +1,4 @@
-use super::models::{MatchEvent, MatchScore};
+use super::models::{MatchEvent, MatchScore, SportType};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppEvent {
@@ -9,7 +9,10 @@ pub enum AppEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DiscoveredMatch {
-    pub sport: String,
+    /// Typed sport (`Display` → `"cricket"`/`"soccer"` for ESPN URLs).
+    /// Replaces the former `String` so dashboard filtering and fetcher
+    /// routing compare enums instead of string literals.
+    pub sport: SportType,
     pub series_id: String,
     pub match_id: String,
     pub title: String,

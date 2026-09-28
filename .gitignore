@@ -1,27 +1,34 @@
 # Logs
-logs
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
+# Rust
+/native/target
+**/target/
+
+# Windows artifacts
+*.exe
+*.msi
+*.msix
+*.appx
+*.pdb
+*.ilk
+
+# Local env / secrets
+.env*
+*.pem
+*.key
 *.local
 
-/native/target
-Cargo.lock.orig
-
 # Editor directories and files
-.vscode/*
-!.vscode/extensions.json
 .idea
+.vscode/
 .DS_Store
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+
+# Merge/diff leftovers
+*.orig
+*.rej

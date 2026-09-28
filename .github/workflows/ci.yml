@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: fmt --check
+        run: cargo fmt --check --manifest-path native/Cargo.toml
+      - name: clippy (-D warnings, lib only — UI modules are cfg(windows))
+        run: cargo clippy --manifest-path native/Cargo.toml --lib -- -D warnings
+      - name: engine unit tests (cross-platform lib)
+        run: cargo test --manifest-path native/Cargo.toml --lib
+      - name: audit (best-effort — passes with a note when cargo-audit is absent)
+        run: |
+          if command -v cargo-audit >/dev/null 2>&1; then
+            cargo audit --deny warnings
+          else
+            echo "cargo-audit not installed on this runner; supply-chain gate is deny.toml + Dependabot (see CHANGELOG.md). Skipping without failure."
+          fi
+        working-directory: native

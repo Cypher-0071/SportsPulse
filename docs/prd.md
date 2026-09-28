@@ -1,5 +1,11 @@
 # 🏏 SportsPulse — Product Requirements Document
 
+> **ARCHIVED — Phase-1 Tauri PRD (historical). Native Win32 is canonical.**
+> Tauri v2 / WebView2 stack deleted from tree; body below is preserved history.
+> Shipped since: football (soccer) scores, native Direct2D dashboard, IPL coverage —
+> these override § Match Coverage non-goals (`Excluded Phase 1: IPL`) and
+> § Non-Goals / Future Phases (`Football scores`, `IPL support`).
+
 ## Overview
 
 **SportsPulse** is a lightweight, always-on Windows system tray application built in **Rust (Tauri)** that delivers real-time Indian cricket scores with near-zero system resource usage. It is designed for users who want live match awareness without the overhead of a browser or heavy sports app — especially while gaming, coding, or doing any demanding task in parallel.
