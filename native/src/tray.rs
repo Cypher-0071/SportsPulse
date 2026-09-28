@@ -1,18 +1,24 @@
 //! SportsPulse — Win32 System Tray (Shell_NotifyIconW) and Context Menu.
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use windows::core::*;
-use windows::Win32::Foundation::{HWND, POINT};
+use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
-    NOTIFYICONDATAW,
+    NIM_SETVERSION, NOTIFYICONDATAW, NOTIFYICON_VERSION_4,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, LoadIconW, SetForegroundWindow,
-    TrackPopupMenuEx, HICON, HMENU, IDI_APPLICATION, MF_SEPARATOR, MF_STRING, TPM_BOTTOMALIGN,
-    TPM_RIGHTALIGN,
+    AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, LoadIconW, PostMessageW,
+    RegisterWindowMessageW, SetForegroundWindow, TrackPopupMenuEx, HICON, HMENU, IDI_APPLICATION,
+    MF_SEPARATOR, MF_STRING, TPM_BOTTOMALIGN, TPM_RIGHTALIGN, WM_NULL,
 };
 
 pub const WM_APP_TRAY: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 2;
+
+/// Registered "TaskbarCreated" broadcast id. Explorer restarts send this;
+/// the main wnd_proc re-ADDs the icon on receipt. 0 = registration failed.
+pub static TASKBAR_CREATED_MSG: AtomicU32 = AtomicU32::new(0);
 
 pub const ID_TRAY_TOGGLE_SCORE: usize = 1001;
 pub const ID_TRAY_OPEN_DASHBOARD: usize = 1002;
@@ -34,6 +40,10 @@ fn to_wide_buf<const N: usize>(s: &str) -> [u16; N] {
 
 impl TrayIcon {
     pub unsafe fn new(hwnd: HWND, tooltip: &str) -> Self {
+        // Broadcast id for Explorer-restart recovery (checked in the main wnd_proc).
+        let taskbar_created = RegisterWindowMessageW(w!("TaskbarCreated"));
+        TASKBAR_CREATED_MSG.store(taskbar_created, Ordering::Release);
+
         let hicon: HICON = LoadIconW(None, IDI_APPLICATION).unwrap_or_default();
         let mut nid = NOTIFYICONDATAW::default();
         nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
@@ -45,14 +55,31 @@ impl TrayIcon {
         nid.szTip = to_wide_buf::<128>(tooltip);
 
         let _ = Shell_NotifyIconW(NIM_ADD, &nid);
+        // Negotiate NOTIFYICON_VERSION_4 behavior (required post-ADD protocol).
+        nid.Anonymous.uVersion = NOTIFYICON_VERSION_4;
+        let _ = Shell_NotifyIconW(NIM_SETVERSION, &nid);
 
         Self { hwnd, nid }
+    }
+
+    /// Re-ADD the icon after an Explorer restart (TaskbarCreated broadcast).
+    pub unsafe fn re_add(&self) {
+        let _ = Shell_NotifyIconW(NIM_ADD, &self.nid);
+        let mut nid = self.nid;
+        nid.Anonymous.uVersion = NOTIFYICON_VERSION_4;
+        let _ = Shell_NotifyIconW(NIM_SETVERSION, &nid);
     }
 
     pub unsafe fn update_tooltip(&mut self, tooltip: &str) {
         self.nid.szTip = to_wide_buf::<128>(tooltip);
         self.nid.uFlags = NIF_TIP;
         let _ = Shell_NotifyIconW(NIM_MODIFY, &self.nid);
+    }
+
+    pub unsafe fn remove(&self) {
+        // Explicit teardown for main WM_DESTROY/WM_NCDESTROY ordering.
+        // Drop also calls this; a second NIM_DELETE is a harmless no-op.
+        let _ = Shell_NotifyIconW(NIM_DELETE, &self.nid);
     }
 
     pub unsafe fn show_context_menu(&self) {
@@ -101,6 +128,9 @@ impl TrayIcon {
             None,
         );
         let _ = DestroyMenu(hmenu);
+        // Trailing WM_NULL: lets a stuck TrackPopupMenuEx return so the next
+        // right-click re-opens the menu instead of hanging.
+        let _ = PostMessageW(self.hwnd, WM_NULL, WPARAM(0), LPARAM(0));
     }
 }
 

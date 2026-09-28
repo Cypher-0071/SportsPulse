@@ -3,22 +3,21 @@
 
 #![allow(dead_code)]
 
+use std::cell::RefCell;
+use std::marker::PhantomData;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use windows::core::*;
 use windows::Win32::Foundation::{COLORREF, HWND, POINT, SIZE};
 
-use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_POINT_2F, D2D_RECT_F,
-};
+use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_POINT_2F, D2D_RECT_F};
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateFactory, ID2D1Factory, ID2D1RenderTarget, ID2D1SolidColorBrush,
-    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_ELLIPSE,
-    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_FEATURE_LEVEL_DEFAULT, D2D1_RENDER_TARGET_PROPERTIES,
-    D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1_ROUNDED_RECT, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
+    ID2D1RenderTarget, ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+    D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_ELLIPSE, D2D1_ROUNDED_RECT,
+    D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
 };
 use windows::Win32::Graphics::DirectWrite::{
-    DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
-    DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
+    IDWriteTextFormat, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
     DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_MEASURING_MODE_NATURAL,
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER,
     DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_WORD_WRAPPING_NO_WRAP,
@@ -27,23 +26,25 @@ use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetWindowDC, ReleaseDC,
     SelectObject, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION,
-    DIB_RGB_COLORS, HBITMAP, HDC,
+    DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
 };
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_WICPixelFormat32bppPBGRA, IWICBitmap, IWICImagingFactory,
     WICBitmapCacheOnDemand,
 };
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
-use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA};
+use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA, WHEEL_DELTA};
 
 use crate::engine::events::DiscoveredMatch;
+use crate::engine::models::SportType;
+use crate::render::{
+    d2d_factory, dwrite_factory, high_contrast, reduced_motion, software_rt_props, ui_text,
+};
 use chrono::{DateTime, FixedOffset};
 
 // Spacious, large default dimensions
 pub const DASH_NORMAL_W: u32 = 1120;
 pub const DASH_NORMAL_H: u32 = 760;
-pub const DASH_W: u32 = DASH_NORMAL_W;
-pub const DASH_H: u32 = DASH_NORMAL_H;
 
 pub const WM_APP_SELECT_MATCH: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 10;
 pub const WM_APP_UNTRACK: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 11;
@@ -57,11 +58,15 @@ const CARD_LEFT: f32 = 32.0;
 const CARD_RIGHT: f32 = 32.0;
 const ACTION_W: f32 = 108.0;
 const CONTENT_BOTTOM_GUTTER: f32 = 24.0;
-const SCROLL_STEP: f32 = 72.0;
+const SCROLL_STEP: f32 = 72.0; // pixels per wheel notch
 const SWITCHER_W: f32 = 232.0;
 const SWITCHER_H: f32 = 36.0;
 const EMPTY_CARD_H: f32 = 84.0;
 const SPINNER_RADIUS: f32 = 16.0;
+
+/// Set by main.rs when both global-hotkey registrations fail; present() then
+/// draws a conflict toast in the title bar instead of running silently hotkey-less.
+pub static HOTKEY_CONFLICT: AtomicBool = AtomicBool::new(false);
 
 #[inline]
 fn color(r: f32, g: f32, b: f32, a: f32) -> D2D1_COLOR_F {
@@ -70,6 +75,8 @@ fn color(r: f32, g: f32, b: f32, a: f32) -> D2D1_COLOR_F {
 
 struct Fmt {
     fmt: IDWriteTextFormat,
+    // Persistent UTF-16 scratch buffer: avoids one Vec<u16> alloc per DrawText.
+    buf: RefCell<Vec<u16>>,
 }
 
 impl Fmt {
@@ -80,9 +87,11 @@ impl Fmt {
         rect: &D2D_RECT_F,
         brush: &ID2D1SolidColorBrush,
     ) {
-        let wide: Vec<u16> = s.encode_utf16().collect();
+        let mut buf = self.buf.borrow_mut();
+        buf.clear();
+        buf.extend(s.encode_utf16());
         rt.DrawText(
-            &wide,
+            buf.as_slice(),
             &self.fmt,
             rect,
             brush,
@@ -111,12 +120,11 @@ pub enum DashboardSport {
 }
 
 impl DashboardSport {
-    fn matches(self, sport: &str) -> bool {
-        match self {
-            Self::Cricket => sport.eq_ignore_ascii_case("cricket"),
-            Self::Football => {
-                sport.eq_ignore_ascii_case("soccer") || sport.eq_ignore_ascii_case("football")
-            }
+    fn matches(self, sport: SportType) -> bool {
+        match (self, sport) {
+            (Self::Cricket, SportType::Cricket) => true,
+            (Self::Football, SportType::Soccer) => true,
+            _ => false,
         }
     }
 
@@ -156,11 +164,17 @@ fn push_to_league_group(groups: &mut Vec<LeagueGroup>, league_name: &str, index:
 }
 
 fn format_upcoming_time(value: &str) -> String {
-    let offset = FixedOffset::east_opt(5 * 60 * 60 + 30 * 60).unwrap();
+    // Display-only IST conversion. ESPN event timestamps arrive as UTC RFC3339;
+    // scoreboard `dates=` in engine/fetcher.rs (`start_polling`) is Utc-built
+    // (chrono::Utc, engine-owned).
+    // P0-9: never panic on a const offset — fall back to the raw string.
+    let Some(offset) = FixedOffset::east_opt(5 * 60 * 60 + 30 * 60) else {
+        return value.to_owned();
+    };
     DateTime::parse_from_rfc3339(value)
         .map(|time| {
             time.with_timezone(&offset)
-                .format("%-d %b, %I:%M %p")
+                .format("%-d %b, %I:%M %p IST")
                 .to_string()
         })
         .unwrap_or_else(|_| value.to_owned())
@@ -214,7 +228,9 @@ impl Brushes {
             divider: rt.CreateSolidColorBrush(&color(0.210, 0.210, 0.210, 1.0), None)?, // #353535
             white: rt.CreateSolidColorBrush(&color(1.0, 1.0, 1.0, 1.0), None)?,         // #FFFFFF
             dim: rt.CreateSolidColorBrush(&color(0.65, 0.65, 0.65, 1.0), None)?,        // #A6A6A6
-            subtle: rt.CreateSolidColorBrush(&color(0.44, 0.44, 0.44, 1.0), None)?,     // #707070
+            // Raised from #707070: subtle is body text (loading/empty states) and
+            // must clear 4.5 like dim. Decorative uses (scrollbar thumb) inherit it.
+            subtle: rt.CreateSolidColorBrush(&color(0.65, 0.65, 0.65, 1.0), None)?, // #A6A6A6
             icon_box_bg: rt.CreateSolidColorBrush(&color(0.145, 0.145, 0.145, 1.0), None)?, // #252525
             action_bg: rt.CreateSolidColorBrush(&color(0.130, 0.130, 0.130, 1.0), None)?,
             action_hover_bg: rt.CreateSolidColorBrush(&color(0.220, 0.220, 0.220, 1.0), None)?,
@@ -250,10 +266,12 @@ impl Brushes {
 
 pub struct DashboardRenderer {
     hwnd: HWND,
+    wic_factory: IWICImagingFactory,
     wic: IWICBitmap,
     rt: ID2D1RenderTarget,
     mem_dc: HDC,
     hbmp: HBITMAP,
+    old_bmp: HGDIOBJ,
     bits: *mut core::ffi::c_void,
     pub w: i32,
     pub h: i32,
@@ -279,40 +297,54 @@ pub struct DashboardRenderer {
     pub cricket_hover: bool,
     pub football_hover: bool,
     pub is_maximized: bool,
+    /// Vertical scroll position in **pixels** (clamped to `max_scroll()`).
     pub scroll_offset: usize,
+    /// Accumulated raw wheel delta; one notch (WHEEL_DELTA = 120) scrolls SCROLL_STEP px.
+    pub wheel_accum: i32,
+    /// True while a TME_LEAVE track is armed (re-armed on next mouse move after leave).
+    pub mouse_tracking: bool,
     pub active_sport: DashboardSport,
     content_height: f32,
-    card_layout: Vec<(usize, D2D_RECT_F)>,
+    /// (global match index, card rect, exact 44px action-button rect).
+    card_layout: Vec<(usize, D2D_RECT_F, D2D_RECT_F)>,
     spinner_origin: Instant,
+    // Persistent pixel scratch buffer: avoids a ~3.4MB alloc + double copy per present.
+    buf: Vec<u8>,
+    // Per-present grouping scratch: reused via mem::take + restore so the
+    // 120ms loader tick never reallocs. Outer capacity stabilizes after the
+    // first frames; inner per-league index Vecs stay bounded (league count
+    // < 32, matches total < 512 — small vs the ~3.4MB frame buffer).
+    // sport_filter_scratch holds global match indices for the active sport.
+    sport_filter_scratch: Vec<usize>,
+    live_groups_scratch: Vec<LeagueGroup>,
+    upcoming_groups_scratch: Vec<LeagueGroup>,
+    // STA-bound COM/GDI state must never cross threads.
+    _no_send: PhantomData<*const ()>,
 }
 
 impl DashboardRenderer {
     pub unsafe fn new(hwnd: HWND, w: u32, h: u32) -> Result<Self> {
-        let factory: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
-        let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
+        let factory = d2d_factory()?;
+        let dwrite = dwrite_factory()?;
         let wicf: IWICImagingFactory =
             CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
 
         let wic =
             wicf.CreateBitmap(w, h, &GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand)?;
 
-        let props = D2D1_RENDER_TARGET_PROPERTIES {
-            r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
-            pixelFormat: D2D1_PIXEL_FORMAT {
-                format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-            },
-            dpiX: 0.0,
-            dpiY: 0.0,
-            usage: windows::Win32::Graphics::Direct2D::D2D1_RENDER_TARGET_USAGE_NONE,
-            minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
-        };
-        let rt = factory.CreateWicBitmapRenderTarget(&wic, &props)?;
+        let rt = factory.CreateWicBitmapRenderTarget(&wic, &software_rt_props())?;
         rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
 
         let screen_dc = GetWindowDC(None);
+        if screen_dc.is_invalid() {
+            return Err(Error::from_win32());
+        }
         let mem_dc = CreateCompatibleDC(screen_dc);
+        // Released before any fallible op below, so every early-`?` path is covered.
         let _ = ReleaseDC(None, screen_dc);
+        if mem_dc.is_invalid() {
+            return Err(Error::from_win32());
+        }
 
         let mut bmi = BITMAPINFO::default();
         bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
@@ -324,7 +356,11 @@ impl DashboardRenderer {
 
         let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
         let hbmp = CreateDIBSection(mem_dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)?;
-        SelectObject(mem_dc, hbmp);
+        if hbmp.is_invalid() {
+            let _ = DeleteDC(mem_dc);
+            return Err(Error::from_win32());
+        }
+        let old_bmp = SelectObject(mem_dc, hbmp);
 
         let brushes = Brushes::create(&rt)?;
 
@@ -342,15 +378,35 @@ impl DashboardRenderer {
                 fmt.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
                 fmt.SetTextAlignment(align)?;
                 fmt.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
-                Ok(Fmt { fmt })
+                Ok(Fmt {
+                    fmt,
+                    buf: RefCell::new(Vec::new()),
+                })
             };
+
+        // Emoji icon font: "Segoe UI Variable Display" has no 🏏/⚽ glyphs, so the
+        // page-header icon gets an explicit Emoji family instead of tofu boxes.
+        let fmt_icon_fmt = dwrite.CreateTextFormat(
+            w!("Segoe UI Emoji"),
+            None,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            22.0,
+            w!("en-us"),
+        )?;
+        fmt_icon_fmt.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+        fmt_icon_fmt.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+        fmt_icon_fmt.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
 
         Ok(Self {
             hwnd,
+            wic_factory: wicf,
             wic,
             rt,
             mem_dc,
             hbmp,
+            old_bmp,
             bits,
             w: w as i32,
             h: h as i32,
@@ -371,11 +427,10 @@ impl DashboardRenderer {
                 DWRITE_TEXT_ALIGNMENT_LEADING,
             )?,
             fmt_badge: mk_font(13.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
-            fmt_icon: mk_font(
-                22.0,
-                DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_TEXT_ALIGNMENT_CENTER,
-            )?,
+            fmt_icon: Fmt {
+                fmt: fmt_icon_fmt,
+                buf: RefCell::new(Vec::new()),
+            },
             fmt_empty: mk_font(
                 16.0,
                 DWRITE_FONT_WEIGHT_NORMAL,
@@ -398,53 +453,59 @@ impl DashboardRenderer {
             football_hover: false,
             is_maximized: false,
             scroll_offset: 0,
+            wheel_accum: 0,
+            mouse_tracking: false,
             active_sport: DashboardSport::Cricket,
             content_height: 0.0,
             card_layout: Vec::new(),
             spinner_origin: Instant::now(),
+            buf: Vec::new(),
+            sport_filter_scratch: Vec::new(),
+            live_groups_scratch: Vec::new(),
+            upcoming_groups_scratch: Vec::new(),
+            _no_send: PhantomData,
         })
     }
 
+    /// Rebuild only the WIC bitmap / render target / brushes / DIB on resize.
+    /// Factories (D2D/DWrite globals, per-renderer WIC) and mem_dc are reused.
     pub unsafe fn resize(&mut self, new_w: u32, new_h: u32) -> Result<()> {
         if self.w == new_w as i32 && self.h == new_h as i32 {
             return Ok(());
         }
 
+        // Park the previously selected bitmap; deleting a selected GDI object is a no-op leak.
+        if !self.mem_dc.is_invalid() {
+            let _ = SelectObject(self.mem_dc, self.old_bmp);
+        }
         if !self.hbmp.is_invalid() {
             let _ = DeleteObject(self.hbmp);
         }
-        if !self.mem_dc.is_invalid() {
-            let _ = DeleteDC(self.mem_dc);
-        }
 
-        let factory: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
-        let wicf: IWICImagingFactory =
-            CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
-
-        let wic = wicf.CreateBitmap(
+        let factory = d2d_factory()?;
+        let wic = self.wic_factory.CreateBitmap(
             new_w,
             new_h,
             &GUID_WICPixelFormat32bppPBGRA,
             WICBitmapCacheOnDemand,
         )?;
 
-        let props = D2D1_RENDER_TARGET_PROPERTIES {
-            r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
-            pixelFormat: D2D1_PIXEL_FORMAT {
-                format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-            },
-            dpiX: 0.0,
-            dpiY: 0.0,
-            usage: windows::Win32::Graphics::Direct2D::D2D1_RENDER_TARGET_USAGE_NONE,
-            minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
-        };
-        let rt = factory.CreateWicBitmapRenderTarget(&wic, &props)?;
+        let rt = factory.CreateWicBitmapRenderTarget(&wic, &software_rt_props())?;
         rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
 
-        let screen_dc = GetWindowDC(None);
-        let mem_dc = CreateCompatibleDC(screen_dc);
-        let _ = ReleaseDC(None, screen_dc);
+        // Reuse mem_dc across resizes; recreate only if it was lost.
+        if self.mem_dc.is_invalid() {
+            let screen_dc = GetWindowDC(None);
+            if screen_dc.is_invalid() {
+                return Err(Error::from_win32());
+            }
+            let mem_dc = CreateCompatibleDC(screen_dc);
+            let _ = ReleaseDC(None, screen_dc);
+            if mem_dc.is_invalid() {
+                return Err(Error::from_win32());
+            }
+            self.mem_dc = mem_dc;
+        }
 
         let mut bmi = BITMAPINFO::default();
         bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
@@ -455,23 +516,65 @@ impl DashboardRenderer {
         bmi.bmiHeader.biCompression = BI_RGB.0;
 
         let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
-        let hbmp = CreateDIBSection(mem_dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)?;
-        SelectObject(mem_dc, hbmp);
+        let hbmp = CreateDIBSection(self.mem_dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)?;
+        if hbmp.is_invalid() {
+            return Err(Error::from_win32());
+        }
+        self.old_bmp = SelectObject(self.mem_dc, hbmp);
 
         self.brushes = Brushes::create(&rt)?;
         self.wic = wic;
         self.rt = rt;
-        self.mem_dc = mem_dc;
         self.hbmp = hbmp;
         self.bits = bits;
         self.w = new_w as i32;
         self.h = new_h as i32;
+        // Force the persistent buffer back to the new footprint on next present.
+        self.buf.clear();
 
         Ok(())
     }
 
+    /// Force a full rebuild at the current size (D2DERR_RECREATE_TARGET
+    /// recovery). resize() intentionally no-ops on identical dims, so device-
+    /// lost recovery needs this explicit path; caller retries present() once.
+    pub unsafe fn recreate(&mut self) -> Result<()> {
+        let (w, h) = (self.w, self.h);
+        self.w = 0;
+        self.h = 0;
+        self.resize(w as u32, h as u32)
+    }
+
     fn page_content_top() -> f32 {
         TITLE_BAR_HEIGHT + PAGE_HEADER_HEIGHT
+    }
+
+    /// Single source of truth for the three caption buttons, shared by draw
+    /// and hit-test so the clickable rects exactly match the painted ones.
+    /// Returns (minimize, maximize, close).
+    pub fn caption_rects(w: f32) -> (D2D_RECT_F, D2D_RECT_F, D2D_RECT_F) {
+        let top = 4.0;
+        let bottom = TITLE_BAR_HEIGHT - 4.0;
+        (
+            D2D_RECT_F {
+                left: w - 136.0,
+                top,
+                right: w - 94.0,
+                bottom,
+            },
+            D2D_RECT_F {
+                left: w - 90.0,
+                top,
+                right: w - 48.0,
+                bottom,
+            },
+            D2D_RECT_F {
+                left: w - 44.0,
+                top,
+                right: w - 6.0,
+                bottom,
+            },
+        )
     }
 
     fn sport_switcher_rects(&self) -> (D2D_RECT_F, D2D_RECT_F, D2D_RECT_F) {
@@ -508,6 +611,13 @@ impl DashboardRenderer {
         self.rt
             .DrawEllipse(&ellipse, &self.brushes.spinner_track, 3.5, None);
 
+        if reduced_motion() {
+            // Static ring when the user disabled animation: no rotation.
+            self.rt
+                .DrawEllipse(&ellipse, &self.brushes.spinner_accent, 3.6, None);
+            return;
+        }
+
         let t = self.spinner_origin.elapsed().as_secs_f32();
         let start = t * std::f32::consts::TAU * 0.95;
         let sweep = 1.85_f32;
@@ -535,13 +645,14 @@ impl DashboardRenderer {
         let w = self.w as f32;
 
         if y >= 0.0 && y <= TITLE_BAR_HEIGHT {
-            if x >= (w - 46.0) && x <= w {
+            let (min_r, max_r, close_r) = Self::caption_rects(w);
+            if x >= close_r.left && x <= close_r.right {
                 return Some(HitTarget::CloseButton);
             }
-            if x >= (w - 92.0) && x < (w - 46.0) {
+            if x >= max_r.left && x < max_r.right {
                 return Some(HitTarget::MaximizeButton);
             }
-            if x >= (w - 138.0) && x < (w - 92.0) {
+            if x >= min_r.left && x < min_r.right {
                 return Some(HitTarget::MinimizeButton);
             }
             return Some(HitTarget::TitleBar);
@@ -562,11 +673,14 @@ impl DashboardRenderer {
             return None;
         }
 
-        for (index, rect) in &self.card_layout {
-            if x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom {
-                if x >= rect.right - ACTION_W - 16.0 {
-                    return Some(HitTarget::MatchAction(*index));
-                }
+        // Action buttons hit first on their exact 44px rects; card bodies second.
+        for (index, _card, action) in &self.card_layout {
+            if x >= action.left && x <= action.right && y >= action.top && y <= action.bottom {
+                return Some(HitTarget::MatchAction(*index));
+            }
+        }
+        for (index, card, _action) in &self.card_layout {
+            if x >= card.left && x <= card.right && y >= card.top && y <= card.bottom {
                 return Some(HitTarget::MatchItem(*index));
             }
         }
@@ -600,8 +714,10 @@ impl DashboardRenderer {
             radiusY: 16.0,
         };
         self.rt.FillRoundedRectangle(&rr, &self.brushes.bg);
+        // HC: surfaces are already opaque; bump the window border to 2px.
+        let border_w = if high_contrast() { 2.0 } else { 1.2 };
         self.rt
-            .DrawRoundedRectangle(&rr, &self.brushes.border, 1.2, None);
+            .DrawRoundedRectangle(&rr, &self.brushes.border, border_w, None);
 
         // Title bar header.
         let header_rect = D2D_RECT_F {
@@ -646,16 +762,28 @@ impl DashboardRenderer {
             &self.brushes.white,
         );
 
+        // Hotkey-conflict toast (main.rs sets HOTKEY_CONFLICT when both
+        // RegisterHotKey ids fail). Remap UI is out of scope here.
+        if HOTKEY_CONFLICT.load(Ordering::Relaxed) {
+            let warn_rect = D2D_RECT_F {
+                left: w - 560.0,
+                top: 0.0,
+                right: w - 148.0,
+                bottom: TITLE_BAR_HEIGHT,
+            };
+            self.fmt_item_sub.text(
+                &self.rt,
+                "⚠ Hotkey unavailable (conflict)",
+                &warn_rect,
+                &self.brushes.amber_badge_text,
+            );
+        }
+
         // 3. Caption Buttons: Minimize (−), Maximize/Restore (□ / ❐), Close (✕)
-        let btn_h = TITLE_BAR_HEIGHT;
+        // Rects come from caption_rects() — the same helper hit_test uses.
+        let (min_rect, max_rect, close_rect) = Self::caption_rects(w);
 
         // Minimize button, drawn as geometry for consistent optical size at every DPI.
-        let min_rect = D2D_RECT_F {
-            left: w - 136.0,
-            top: 4.0,
-            right: w - 94.0,
-            bottom: btn_h - 4.0,
-        };
         let min_rr = D2D1_ROUNDED_RECT {
             rect: min_rect,
             radiusX: 7.0,
@@ -685,12 +813,6 @@ impl DashboardRenderer {
         );
 
         // Maximize / restore button, a crisp square rather than a small font glyph.
-        let max_rect = D2D_RECT_F {
-            left: w - 90.0,
-            top: 4.0,
-            right: w - 48.0,
-            bottom: btn_h - 4.0,
-        };
         let max_rr = D2D1_ROUNDED_RECT {
             rect: max_rect,
             radiusX: 7.0,
@@ -720,12 +842,6 @@ impl DashboardRenderer {
         );
 
         // Close Button (✕) with Windows 11 Red Hover
-        let close_rect = D2D_RECT_F {
-            left: w - 44.0,
-            top: 4.0,
-            right: w - 6.0,
-            bottom: btn_h - 4.0,
-        };
         let close_rr = D2D1_ROUNDED_RECT {
             rect: close_rect,
             radiusX: 8.0,
@@ -827,13 +943,25 @@ impl DashboardRenderer {
             None,
         );
 
-        let sport_matches: Vec<(usize, &DiscoveredMatch)> = matches
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| self.active_sport.matches(&m.sport))
-            .collect();
+        // Reused scratch buffers (fields): no per-present Vec collect.
+        // sport_filter holds global indices for the active sport; groups hold
+        // borrowed league structure rebuilt each frame. Taken out via mem::take
+        // so the draw loop below holds no &self borrow on them.
+        let sport = self.active_sport;
+        let mut sport_idx = std::mem::take(&mut self.sport_filter_scratch);
+        sport_idx.clear();
+        sport_idx.extend(
+            matches
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| sport.matches(m.sport))
+                .map(|(i, _)| i),
+        );
 
         if loading {
+            // Loader path needs no grouping: return the filter scratch
+            // immediately so capacity is preserved for the next present.
+            self.sport_filter_scratch = std::mem::take(&mut sport_idx);
             self.scroll_offset = 0;
             self.content_height = 0.0;
             let content_top = Self::page_content_top();
@@ -853,15 +981,24 @@ impl DashboardRenderer {
                 &self.brushes.subtle,
             );
         } else {
-            let mut live_groups = Vec::new();
-            let mut upcoming_groups = Vec::new();
-            for (index, m) in sport_matches {
+            // Reused group buffers: clear (keeps outer capacity) and rebuild.
+            // Inner per-league index Vecs are bounded (leagues < 32, total
+            // matches < 512) — small vs the ~3.4MB frame buffer.
+            let mut live_groups = std::mem::take(&mut self.live_groups_scratch);
+            let mut upcoming_groups = std::mem::take(&mut self.upcoming_groups_scratch);
+            live_groups.clear();
+            upcoming_groups.clear();
+            for index in &sport_idx {
+                let index = *index;
+                let m = &matches[index];
                 if is_live_match(m) {
                     push_to_league_group(&mut live_groups, &m.league_name, index);
                 } else {
                     push_to_league_group(&mut upcoming_groups, &m.league_name, index);
                 }
             }
+            // Filter scratch no longer needed: restore now (keeps capacity).
+            self.sport_filter_scratch = sport_idx;
             live_groups.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
             upcoming_groups.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
 
@@ -875,7 +1012,8 @@ impl DashboardRenderer {
             let gap = 16.0;
             let content_top = Self::page_content_top();
             let content_bottom = h - CONTENT_BOTTOM_GUTTER;
-            let scroll_px = self.scroll_offset as f32 * SCROLL_STEP;
+            // scroll_offset is already in pixels.
+            let scroll_px = self.scroll_offset as f32;
             let mut y = ITEM_TOP_START - scroll_px;
             let clip = D2D_RECT_F {
                 left: 1.0,
@@ -957,7 +1095,7 @@ impl DashboardRenderer {
                     self.rt.FillRectangle(&league_marker, league_brush);
                     self.fmt_eyebrow.text(
                         &self.rt,
-                        &group.name.to_uppercase(),
+                        &ui_text(&group.name.to_uppercase(), 48),
                         &league_rect,
                         &self.brushes.dim,
                     );
@@ -978,7 +1116,15 @@ impl DashboardRenderer {
                             right: left + card_width,
                             bottom: top + card_height,
                         };
-                        self.card_layout.push((index, item_rect));
+                        // Exact 44px-tall action button rect (≥44px touch target),
+                        // stored for hit-testing.
+                        let action_rect = D2D_RECT_F {
+                            left: item_rect.right - ACTION_W - 16.0,
+                            top: top + (card_height - 44.0) / 2.0,
+                            right: item_rect.right - 16.0,
+                            bottom: top + (card_height + 44.0) / 2.0,
+                        };
+                        self.card_layout.push((index, item_rect, action_rect));
                         let item_rr = D2D1_ROUNDED_RECT {
                             rect: item_rect,
                             radiusX: 10.0,
@@ -1010,12 +1156,6 @@ impl DashboardRenderer {
                                 .DrawRoundedRectangle(&item_rr, &self.brushes.border, 1.0, None);
                         }
 
-                        let action_rect = D2D_RECT_F {
-                            left: item_rect.right - ACTION_W - 16.0,
-                            top: top + (card_height - 36.0) / 2.0,
-                            right: item_rect.right - 16.0,
-                            bottom: top + (card_height + 36.0) / 2.0,
-                        };
                         let action_rr = D2D1_ROUNDED_RECT {
                             rect: action_rect,
                             radiusX: 7.0,
@@ -1061,7 +1201,7 @@ impl DashboardRenderer {
                             };
                             self.fmt_item_title.text(
                                 &self.rt,
-                                &m.title,
+                                &ui_text(&m.title, 64),
                                 &title_rect,
                                 &self.brushes.white,
                             );
@@ -1080,13 +1220,13 @@ impl DashboardRenderer {
                             };
                             self.fmt_item_title.text(
                                 &self.rt,
-                                &m.title,
+                                &ui_text(&m.title, 64),
                                 &title_rect,
                                 &self.brushes.white,
                             );
                             self.fmt_item_sub.text(
                                 &self.rt,
-                                &format_upcoming_time(&m.start_time),
+                                &ui_text(&format_upcoming_time(&m.start_time), 40),
                                 &time_rect,
                                 &self.brushes.dim,
                             );
@@ -1113,7 +1253,8 @@ impl DashboardRenderer {
                         * (self.scroll_offset as f32 / self.max_scroll().max(1) as f32);
                 let track = D2D1_ROUNDED_RECT {
                     rect: D2D_RECT_F {
-                        left: w - 15.0,
+                        // 8px-wide scrollbar (was 5px): minimum operable width.
+                        left: w - 18.0,
                         top: track_top,
                         right: w - 10.0,
                         bottom: track_bottom,
@@ -1123,7 +1264,7 @@ impl DashboardRenderer {
                 };
                 let thumb = D2D1_ROUNDED_RECT {
                     rect: D2D_RECT_F {
-                        left: w - 15.0,
+                        left: w - 18.0,
                         top: thumb_top,
                         right: w - 10.0,
                         bottom: thumb_top + thumb_height,
@@ -1135,16 +1276,24 @@ impl DashboardRenderer {
                     .FillRoundedRectangle(&track, &self.brushes.icon_box_bg);
                 self.rt.FillRoundedRectangle(&thumb, &self.brushes.subtle);
             }
+            // Return group buffers (capacity preserved for the next present).
+            self.live_groups_scratch = std::mem::take(&mut live_groups);
+            self.upcoming_groups_scratch = std::mem::take(&mut upcoming_groups);
         }
 
         self.rt.EndDraw(None, None)?;
 
         let row_pitch = (self.w * 4) as usize;
         let total_bytes = row_pitch * self.h as usize;
-        let mut buf = vec![0u8; total_bytes];
+        // Persistent buffer: clear + resize instead of a ~3.4MB per-frame alloc.
+        // CopyPixels fully overwrites it; a stride mismatch surfaces as Err below.
+        debug_assert_eq!(row_pitch, self.w as usize * 4);
+        self.buf.clear();
+        self.buf.resize(total_bytes, 0);
         self.wic
-            .CopyPixels(std::ptr::null(), row_pitch as u32, &mut buf)?;
-        std::ptr::copy_nonoverlapping(buf.as_ptr(), self.bits as *mut u8, total_bytes);
+            .CopyPixels(std::ptr::null(), row_pitch as u32, &mut self.buf)?;
+        debug_assert_eq!(self.buf.len(), total_bytes);
+        std::ptr::copy_nonoverlapping(self.buf.as_ptr(), self.bits as *mut u8, self.buf.len());
 
         let size = SIZE {
             cx: self.w,
@@ -1190,21 +1339,47 @@ impl DashboardRenderer {
         self.football_hover = football;
     }
 
-    pub fn scroll_by(&mut self, rows: isize, _match_count: usize) {
+    pub fn scroll_by(&mut self, notches: isize, _match_count: usize) {
+        // Pixel-based: one wheel notch moves SCROLL_STEP px, clamped to max px.
         let max_offset = self.max_scroll();
-        let next = self.scroll_offset as isize + rows;
+        let next = self.scroll_offset as isize + notches * SCROLL_STEP as isize;
         self.scroll_offset = next.clamp(0, max_offset as isize) as usize;
+    }
+
+    /// Accumulate raw wheel delta; every full WHEEL_DELTA (120) emits one notch.
+    /// High-resolution wheels deliver partial deltas that must not be dropped.
+    pub fn accumulate_wheel(&mut self, delta: i32) {
+        self.wheel_accum += delta;
+        let step = WHEEL_DELTA as i32;
+        while self.wheel_accum >= step {
+            self.wheel_accum -= step;
+            self.scroll_by(-1, 0);
+        }
+        while self.wheel_accum <= -step {
+            self.wheel_accum += step;
+            self.scroll_by(1, 0);
+        }
+    }
+
+    /// Clear all hover state (called on WM_MOUSELEAVE).
+    pub fn clear_hover(&mut self) {
+        self.set_hover(None, None, false, false, false, false, false);
+        self.mouse_tracking = false;
     }
 
     fn max_scroll(&self) -> usize {
         let viewport = (self.h as f32 - Self::page_content_top() - CONTENT_BOTTOM_GUTTER).max(1.0);
-        ((self.content_height - viewport).max(0.0) / SCROLL_STEP).ceil() as usize
+        (self.content_height - viewport).max(0.0).ceil() as usize
     }
 }
 
 impl Drop for DashboardRenderer {
     fn drop(&mut self) {
         unsafe {
+            // Restore the previously selected bitmap before deleting ours.
+            if !self.mem_dc.is_invalid() {
+                let _ = SelectObject(self.mem_dc, self.old_bmp);
+            }
             if !self.hbmp.is_invalid() {
                 let _ = DeleteObject(self.hbmp);
             }

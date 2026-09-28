@@ -1,0 +1,21 @@
+# cargo-deny policy (basic — native cutover baseline).
+# Full docs: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+targets = ["x86_64-pc-windows-msvc"]
+
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+ignore = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "warn"
+highlight = "all"
+workspace-dependencies = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

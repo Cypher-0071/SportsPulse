@@ -1,101 +1,192 @@
 //! SportsPulse — Pure Native Win32 Rewrite (windows-rs).
 //! Ultra-lightweight system tray cricket & soccer scoreboard overlay with Direct2D/DirectWrite.
 
-#![windows_subsystem = "windows"]
-#![cfg(windows)]
+#![cfg_attr(windows, windows_subsystem = "windows")]
 #![allow(non_snake_case)]
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(windows)]
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+#[cfg(windows)]
 use windows::core::*;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::ValidateRect;
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::HiDpi::{
-    SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+#[cfg(windows)]
+use windows::Win32::Foundation::{
+    GetLastError, D2DERR_RECREATE_TARGET, HWND, LPARAM, LRESULT, POINT, RECT, RPC_E_CHANGED_MODE,
+    S_FALSE, S_OK, WPARAM,
 };
+#[cfg(windows)]
+use windows::Win32::Graphics::Gdi::{
+    BeginPaint, EndPaint, GetMonitorInfoW, MonitorFromWindow, ValidateRect, MONITORINFO,
+    MONITOR_DEFAULTTONEAREST, PAINTSTRUCT,
+};
+#[cfg(windows)]
+use windows::Win32::System::Com::CoUninitialize;
+#[cfg(windows)]
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+#[cfg(windows)]
 use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX};
+#[cfg(windows)]
 use windows::Win32::System::Threading::GetCurrentProcess;
+#[cfg(windows)]
+use windows::Win32::System::Threading::{CreateMutexW, ExitProcess};
+#[cfg(windows)]
+use windows::Win32::UI::HiDpi::{
+    GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+};
 
+#[cfg(windows)]
 pub fn log_live_benchmark_sample(state_label: &str) {
-    unsafe {
-        let mut pmc = PROCESS_MEMORY_COUNTERS_EX::default();
-        pmc.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
-        let _ = GetProcessMemoryInfo(
-            GetCurrentProcess(),
-            &mut pmc as *mut _ as *mut _,
-            pmc.cb,
-        );
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("C:\\sp_bench\\live_benchmark_verified.log")
-        {
-            let priv_mb = pmc.PrivateUsage as f64 / (1024.0 * 1024.0);
-            let ws_mb = pmc.WorkingSetSize as f64 / (1024.0 * 1024.0);
-            let peak_mb = pmc.PeakWorkingSetSize as f64 / (1024.0 * 1024.0);
-            let _ = writeln!(
-                f,
-                "STATE: {} | PrivateCommit: {} bytes ({:.2} MB) | WorkingSet: {} bytes ({:.2} MB) | PeakWS: {:.2} MB",
-                state_label, pmc.PrivateUsage, priv_mb, pmc.WorkingSetSize, ws_mb, peak_mb
-            );
+    // Gated like render::dbglog: debug builds log to C:\sp_bench\, release
+    // builds never touch C:\ unless explicitly opted in via SP_DEBUG=1.
+    // Unconditional C:\ writes fail under standard-user ACLs and pollute prod.
+    #[cfg(debug_assertions)]
+    {
+        unsafe {
+            let mut pmc = PROCESS_MEMORY_COUNTERS_EX::default();
+            pmc.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+            let _ = GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc as *mut _ as *mut _, pmc.cb);
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("C:\\sp_bench\\live_benchmark_verified.log")
+            {
+                let priv_mb = pmc.PrivateUsage as f64 / (1024.0 * 1024.0);
+                let ws_mb = pmc.WorkingSetSize as f64 / (1024.0 * 1024.0);
+                let peak_mb = pmc.PeakWorkingSetSize as f64 / (1024.0 * 1024.0);
+                let _ = writeln!(
+                    f,
+                    "STATE: {} | PrivateCommit: {} bytes ({:.2} MB) | WorkingSet: {} bytes ({:.2} MB) | PeakWS: {:.2} MB",
+                    state_label, pmc.PrivateUsage, priv_mb, pmc.WorkingSetSize, ws_mb, peak_mb
+                );
+            }
+        }
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        // Opt-in only: SP_DEBUG=1 re-enables the C:\sp_bench\ sample for
+        // field diagnostics. Default release is a strict no-op.
+        if std::env::var_os("SP_DEBUG").is_some() {
+            unsafe {
+                let mut pmc = PROCESS_MEMORY_COUNTERS_EX::default();
+                pmc.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+                let _ =
+                    GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc as *mut _ as *mut _, pmc.cb);
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("C:\\sp_bench\\live_benchmark_verified.log")
+                {
+                    let priv_mb = pmc.PrivateUsage as f64 / (1024.0 * 1024.0);
+                    let ws_mb = pmc.WorkingSetSize as f64 / (1024.0 * 1024.0);
+                    let peak_mb = pmc.PeakWorkingSetSize as f64 / (1024.0 * 1024.0);
+                    let _ = writeln!(
+                        f,
+                        "STATE: {} | PrivateCommit: {} bytes ({:.2} MB) | WorkingSet: {} bytes ({:.2} MB) | PeakWS: {:.2} MB",
+                        state_label, pmc.PrivateUsage, priv_mb, pmc.WorkingSetSize, ws_mb, peak_mb
+                    );
+                }
+            }
+        } else {
+            let _ = state_label;
         }
     }
 }
+#[cfg(windows)]
+use windows::Win32::UI::Controls::WM_MOUSELEAVE;
+#[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, ReleaseCapture, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL,
-    VK_SPACE,
+    RegisterHotKey, ReleaseCapture, TrackMouseEvent, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT,
+    MOD_CONTROL, TME_LEAVE, TRACKMOUSEEVENT, VK_SPACE,
 };
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW,
     GetWindowLongPtrW, GetWindowRect, IsIconic, IsWindowVisible, KillTimer, LoadCursorW,
-    PostMessageW, PostQuitMessage, RegisterClassExW, SendMessageW, SetForegroundWindow, SetTimer,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW, TranslateMessage,
-    CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HCURSOR, HMENU, HTCAPTION, IDC_ARROW, MSG,
-    SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_MINIMIZE, SW_RESTORE, SW_SHOW,
-    SW_SHOWNOACTIVATE, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WM_APP, WM_CLOSE, WM_COMMAND,
-    WM_DESTROY, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_NCLBUTTONDOWN, WM_PAINT, WM_TIMER, WNDCLASSEXW, WS_EX_APPWINDOW, WS_EX_LAYERED,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW, SendMessageW,
+    SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+    SystemParametersInfoW, TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA,
+    HCURSOR, HMENU, HTCAPTION, IDC_ARROW, MB_ICONERROR, MB_OK, MINMAXINFO, MSG, SPI_GETWORKAREA,
+    SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_MINIMIZE, SW_RESTORE, SW_SHOW, SW_SHOWNOACTIVATE,
+    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WM_APP, WM_CLOSE, WM_COMMAND, WM_DESTROY,
+    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_GETMINMAXINFO, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_NCLBUTTONDOWN, WM_PAINT, WM_TIMER,
+    WNDCLASSEXW, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
-pub mod dashboard;
-pub mod engine;
-pub mod popup;
-pub mod render;
-pub mod tray;
-
-use dashboard::{
-    DashboardRenderer, DashboardSport, HitTarget, DASH_NORMAL_H, DASH_NORMAL_W,
+#[cfg(windows)]
+use sportspulse::dashboard::{
+    DashboardRenderer, DashboardSport, HitTarget, DASH_NORMAL_H, DASH_NORMAL_W, HOTKEY_CONFLICT,
     WM_APP_SELECT_MATCH, WM_APP_UNTRACK,
 };
-use engine::cache::ScoreCache;
-use engine::events::{AppEvent, DiscoveredMatch};
-use engine::match_state::ActiveMatchesState;
-use engine::models::{MatchEventType, MatchScore, MatchStatus, SportType};
-use popup::{MiniPopupWindow, POPUP_H, POPUP_W};
-use render::Renderer;
-use tray::{
+#[cfg(windows)]
+use sportspulse::engine::cache::ScoreCache;
+#[cfg(windows)]
+use sportspulse::engine::events::{AppEvent, DiscoveredMatch};
+#[cfg(windows)]
+use sportspulse::engine::match_state::ActiveMatchesState;
+#[cfg(windows)]
+use sportspulse::engine::models::{MatchEventType, MatchScore, MatchStatus, SportType};
+#[cfg(windows)]
+use sportspulse::popup::{MiniPopupWindow, POPUP_H, POPUP_W};
+#[cfg(windows)]
+use sportspulse::render::{reduced_motion, ui_text, Renderer, EVENT_TTL, WIN_TTL};
+#[cfg(windows)]
+use sportspulse::tray::{
     TrayIcon, ID_TRAY_OPEN_DASHBOARD, ID_TRAY_QUIT, ID_TRAY_TOGGLE_SCORE, ID_TRAY_UNTRACK_MATCH,
-    WM_APP_TRAY,
+    TASKBAR_CREATED_MSG, WM_APP_TRAY,
 };
 
+#[cfg(windows)]
 pub const WM_APP_SCORE_UPDATE: u32 = WM_APP + 1;
+#[cfg(windows)]
 pub const WM_APP_MATCH_EVENT: u32 = WM_APP + 3;
+#[cfg(windows)]
 pub const WM_APP_MATCHES_DISCOVERED: u32 = WM_APP + 4;
 
+#[cfg(windows)]
 const CLASS_NAME: PCWSTR = w!("SPNativeMain");
+#[cfg(windows)]
 const SCORE_W: u32 = 540;
+#[cfg(windows)]
 const SCORE_H: u32 = 200;
+#[cfg(windows)]
 const SCORE_SOCCER_H: u32 = 96;
+#[cfg(windows)]
 const SCORE_CRICKET_COMPACT_H: u32 = 140;
+#[cfg(windows)]
 const HOTKEY_ID: i32 = 1;
+/// Fallback registration id when the primary hotkey id is taken.
+#[cfg(windows)]
+const HOTKEY_ID_FALLBACK: i32 = 2;
+#[cfg(windows)]
 const DASH_LOADER_TIMER: usize = 1;
+#[cfg(windows)]
 const OVERLAY_FLASH_TIMER: usize = 2;
+/// Spinner tick slowed from 33ms: a full 1120x760 present per tick is ~3.4MB + D2D + ULW.
+#[cfg(windows)]
+const DASH_LOADER_MS: u32 = 120;
+/// One-shot retry timers for bridge posts that hit a full message queue.
+#[cfg(windows)]
+const POST_RETRY_SCORE_TIMER: usize = 3;
+#[cfg(windows)]
+const POST_RETRY_EVENT_TIMER: usize = 4;
+#[cfg(windows)]
+const POST_RETRY_DISCOVERED_TIMER: usize = 5;
+#[cfg(windows)]
+const POST_RETRY_UNTRACK_TIMER: usize = 6;
+#[cfg(windows)]
+const POST_RETRY_DELAY_MS: u32 = 50;
 
+#[cfg(windows)]
 static HMAIN: AtomicUsize = AtomicUsize::new(0);
+/// Set only when this thread's CoInitializeEx returns S_OK (we own the COM
+/// ref and must balance it with CoUninitialize on WM_DESTROY).
+#[cfg(windows)]
+static COM_NEEDS_UNINIT: AtomicBool = AtomicBool::new(false);
 
+#[cfg(windows)]
 struct AppState {
     renderer: Renderer,
     tray: TrayIcon,
@@ -107,8 +198,28 @@ struct AppState {
     cache: ScoreCache,
     match_state: ActiveMatchesState,
     dashboard_restore_rect: RECT,
+    /// Real DPI from GetDpiForWindow (96 fallback); refreshed on WM_DPICHANGED.
+    dpi: u32,
 }
 
+/// P0-9: GUI startup must never panic. Show a message box and terminate with
+/// ExitProcess(1) instead of expect()/unwrap() on module/window/renderer setup.
+#[cfg(windows)]
+unsafe fn fatal_startup(msg: &str) -> ! {
+    let text: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
+    let caption: Vec<u16> = "SportsPulse fatal error\0".encode_utf16().collect();
+    let _ = MessageBoxW(
+        HWND::default(),
+        PCWSTR(text.as_ptr()),
+        PCWSTR(caption.as_ptr()),
+        MB_OK | MB_ICONERROR,
+    );
+    ExitProcess(1);
+}
+
+/// Primary-monitor work area. Only used before any window exists; afterwards
+/// prefer `work_area_for(hwnd)` so secondary monitors get their own work area.
+#[cfg(windows)]
 unsafe fn work_area() -> RECT {
     let mut wa = RECT::default();
     let _ = SystemParametersInfoW(
@@ -120,8 +231,32 @@ unsafe fn work_area() -> RECT {
     wa
 }
 
-fn overlay_size_for(score: &Option<MatchScore>) -> (u32, u32) {
-    match score {
+/// Work area of the monitor containing `hwnd` (multi-monitor aware).
+/// Falls back to the primary work area if the monitor query fails.
+#[cfg(windows)]
+unsafe fn work_area_for(hwnd: HWND) -> RECT {
+    let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    let mut info = MONITORINFO::default();
+    info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+    if GetMonitorInfoW(monitor, &mut info).as_bool() {
+        info.rcWork
+    } else {
+        work_area()
+    }
+}
+
+#[cfg(windows)]
+fn scale_for_dpi(px: u32, dpi: u32) -> u32 {
+    // P1-1: MulDiv(px, dpi, 96) with rounding. dpi 0 (GetDpiForWindow failure) falls back to 96.
+    let dpi = if dpi == 0 { 96 } else { dpi };
+    (((px as u64 * dpi as u64) + 48) / 96).max(1) as u32
+}
+
+#[cfg(windows)]
+fn overlay_size_for(score: &Option<MatchScore>, dpi: u32) -> (u32, u32) {
+    // P1-1: base sizes are 96-DPI px; scale by dpi/96 so a WM_DPICHANGED
+    // suggested rect is not snapped back to 96-DPI px by the caller.
+    let (base_w, base_h) = match score {
         Some(s) if s.status != MatchStatus::NoMatch => match s.sport {
             SportType::Soccer => (SCORE_W, SCORE_SOCCER_H),
             SportType::Cricket => match s.status {
@@ -130,25 +265,27 @@ fn overlay_size_for(score: &Option<MatchScore>) -> (u32, u32) {
             },
         },
         _ => (SCORE_W, SCORE_H),
-    }
+    };
+    (scale_for_dpi(base_w, dpi), scale_for_dpi(base_h, dpi))
 }
 
-unsafe fn overlay_pos(w: u32, h: u32) -> POINT {
-    let wa = work_area();
+#[cfg(windows)]
+unsafe fn overlay_pos_for(hwnd: HWND, w: u32, h: u32) -> POINT {
+    let wa = work_area_for(hwnd);
     POINT {
         x: wa.right - w as i32 - 12,
         y: wa.bottom - h as i32 - 12,
     }
 }
 
-unsafe fn bottom_right_score_point() -> POINT {
-    overlay_pos(SCORE_W, SCORE_H)
-}
-
-/// Resize, pin to the work-area bottom-right (12px inset), and present the overlay.
+/// Resize, pin to the monitor work-area bottom-right (12px inset), and present the overlay.
+#[cfg(windows)]
 unsafe fn place_and_present_overlay(hwnd: HWND, state: &mut AppState, score: &Option<MatchScore>) {
-    let (w, h) = overlay_size_for(score);
-    let pos = overlay_pos(w, h);
+    // P1-1: DPI-scale the 96-DPI base size via AppState.dpi (GetDpiForWindow,
+    // refreshed on WM_DPICHANGED). Unscaled here snaps a suggested-rect resize
+    // straight back to 96-DPI px. Mirrors the dashboard suggested-rect path.
+    let (w, h) = overlay_size_for(score, state.dpi);
+    let pos = overlay_pos_for(hwnd, w, h);
     let _ = SetWindowPos(
         hwnd,
         None,
@@ -159,20 +296,45 @@ unsafe fn place_and_present_overlay(hwnd: HWND, state: &mut AppState, score: &Op
         SWP_NOACTIVATE | SWP_NOZORDER,
     );
     let _ = state.renderer.resize(w, h);
-    let _ = state.renderer.present(&pos, score);
+    debug_assert_eq!(state.renderer.size(), (w as i32, h as i32));
+    if let Err(e) = state.renderer.present(&pos, score) {
+        // P0-7: D2DERR_RECREATE_TARGET (device lost) must recreate + retry once,
+        // never be swallowed. Other errors stay best-effort; the next tick repaints.
+        if e.code() == D2DERR_RECREATE_TARGET && state.renderer.recreate().is_ok() {
+            #[cfg(debug_assertions)]
+            sportspulse::render::dbglog("overlay RECREATE_TARGET: recreated, retrying present");
+            let _ = state.renderer.present(&pos, score);
+        }
+    }
 }
 
+/// Present at the current window rect. Resizes the renderer first so a
+/// height hop (96/140/200) or DPI change never clips or overdraws.
+#[cfg(windows)]
 unsafe fn present_overlay_now(hwnd: HWND, state: &mut AppState) {
     let score = state.cache.get();
     let mut rect = RECT::default();
     let _ = GetWindowRect(hwnd, &mut rect);
+    let w = (rect.right - rect.left).max(1) as u32;
+    let h = (rect.bottom - rect.top).max(1) as u32;
+    let _ = state.renderer.resize(w, h);
+    debug_assert_eq!(state.renderer.size(), (w as i32, h as i32));
     let pos = POINT {
         x: rect.left,
         y: rect.top,
     };
-    let _ = state.renderer.present(&pos, &score);
+    if let Err(e) = state.renderer.present(&pos, &score) {
+        // P0-7: same RECREATE_TARGET → recreate + retry-once policy as the
+        // primary outside-paint path above.
+        if e.code() == D2DERR_RECREATE_TARGET && state.renderer.recreate().is_ok() {
+            #[cfg(debug_assertions)]
+            sportspulse::render::dbglog("overlay(paint) RECREATE_TARGET: recreated, retrying");
+            let _ = state.renderer.present(&pos, &score);
+        }
+    }
 }
 
+#[cfg(windows)]
 unsafe fn hide_overlay(hwnd: HWND, state: &mut AppState) {
     let _ = KillTimer(hwnd, OVERLAY_FLASH_TIMER);
     state.renderer.set_event_flash(None);
@@ -183,22 +345,25 @@ unsafe fn hide_overlay(hwnd: HWND, state: &mut AppState) {
     log_live_benchmark_sample("Idle Background (Tray Only)");
 }
 
-unsafe fn bottom_right_popup_point() -> POINT {
-    let wa = work_area();
+#[cfg(windows)]
+unsafe fn bottom_right_popup_point(hwnd: HWND) -> POINT {
+    let wa = work_area_for(hwnd);
     POINT {
         x: wa.right - POPUP_W as i32 - 12,
         y: wa.bottom - SCORE_H as i32 - POPUP_H as i32 - 20,
     }
 }
 
-unsafe fn center_screen_point(w: u32, h: u32) -> POINT {
-    let wa = work_area();
+#[cfg(windows)]
+unsafe fn center_screen_point(hwnd: HWND, w: u32, h: u32) -> POINT {
+    let wa = work_area_for(hwnd);
     POINT {
         x: wa.left + (wa.right - wa.left - w as i32) / 2,
         y: wa.top + (wa.bottom - wa.top - h as i32) / 2,
     }
 }
 
+#[cfg(windows)]
 unsafe fn show_overlay(hwnd: HWND, state: &mut AppState, score: &Option<MatchScore>) {
     if let Some(popup) = state.popup_win.as_mut() {
         popup.hide();
@@ -208,6 +373,7 @@ unsafe fn show_overlay(hwnd: HWND, state: &mut AppState, score: &Option<MatchSco
     log_live_benchmark_sample("Scoreboard Shown (Overlay Active)");
 }
 
+#[cfg(windows)]
 unsafe fn toggle_scoreboard(hwnd: HWND, state: &mut AppState) {
     let visible = IsWindowVisible(hwnd).as_bool();
     if visible {
@@ -219,6 +385,7 @@ unsafe fn toggle_scoreboard(hwnd: HWND, state: &mut AppState) {
 }
 
 /// Overlay-click toggle. May hide the dashboard. Tray "Open Dashboard" must never hide.
+#[cfg(windows)]
 unsafe fn toggle_dashboard(state: &mut AppState) {
     if state.dash_hwnd.0.is_null() {
         return;
@@ -238,6 +405,7 @@ unsafe fn toggle_dashboard(state: &mut AppState) {
 }
 
 /// Tray "Open Dashboard": always show + focus. Never hide.
+#[cfg(windows)]
 unsafe fn show_dashboard(state: &mut AppState) {
     if state.dash_hwnd.0.is_null() {
         return;
@@ -255,6 +423,7 @@ unsafe fn show_dashboard(state: &mut AppState) {
 /// Full work-area maximize for the custom-rendered dashboard. This deliberately avoids
 /// the previous down/up double-toggle and the arbitrary 40px gutter that made maximize
 /// look broken. The dashboard preserves its last normal geometry for a faithful restore.
+#[cfg(windows)]
 unsafe fn toggle_dashboard_maximize(state: &mut AppState) {
     let hwnd = state.dash_hwnd;
     let restore_rect = state.dashboard_restore_rect;
@@ -268,7 +437,7 @@ unsafe fn toggle_dashboard_maximize(state: &mut AppState) {
             let _ = GetWindowRect(hwnd, &mut current);
             state.dashboard_restore_rect = current;
 
-            let wa = work_area();
+            let wa = work_area_for(hwnd);
             let width = wa.right - wa.left;
             let height = wa.bottom - wa.top;
             r.is_maximized = true;
@@ -303,28 +472,68 @@ unsafe fn toggle_dashboard_maximize(state: &mut AppState) {
 
 /// Mirrors standard Windows behavior: pulling a maximized window from its title bar
 /// restores its normal size beneath the pointer and immediately continues the drag.
+#[cfg(windows)]
 unsafe fn dashboard_is_loading(state: &AppState) -> bool {
+    // Acquire pairs with the engine's Release store on first-fetch completion.
     !state
         .match_state
         .initial_fetch_completed
-        .load(Ordering::Relaxed)
+        .load(Ordering::Acquire)
 }
 
+#[cfg(windows)]
 unsafe fn present_dashboard(state: &mut AppState, pos: POINT) {
     let loading = dashboard_is_loading(state);
     if let Some(r) = state.dash_renderer.as_mut() {
-        let _ = r.present(&pos, &state.dash_matches, &state.dash_selected_id, loading);
+        if let Err(e) = r.present(&pos, &state.dash_matches, &state.dash_selected_id, loading) {
+            // P0-7: propagate EndDraw RECREATE_TARGET → recreate + retry once.
+            if e.code() == D2DERR_RECREATE_TARGET && r.recreate().is_ok() {
+                #[cfg(debug_assertions)]
+                sportspulse::render::dbglog("dashboard RECREATE_TARGET: recreated, retrying");
+                let _ = r.present(&pos, &state.dash_matches, &state.dash_selected_id, loading);
+            }
+        }
     }
     if loading {
-        let _ = SetTimer(state.dash_hwnd, DASH_LOADER_TIMER, 33, None);
+        let _ = SetTimer(state.dash_hwnd, DASH_LOADER_TIMER, DASH_LOADER_MS, None);
     } else {
         let _ = KillTimer(state.dash_hwnd, DASH_LOADER_TIMER);
     }
 }
 
+/// Same-thread post with one immediate retry if the queue is momentarily full,
+/// then a one-shot timer fallback (same policy as `post_checked` below).
+/// SAFETY: scalar payloads only (WPARAM/LPARAM by value). Never use for
+/// heap-pointer payloads (WM_APP_SELECT_MATCH): a double-post would
+/// double-free. The select path posts its Box::into_raw pointer manually.
+#[cfg(windows)]
+unsafe fn post_ui_msg(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) {
+    if PostMessageW(hwnd, msg, wparam, lparam).is_err()
+        && PostMessageW(hwnd, msg, wparam, lparam).is_err()
+    {
+        let retry_timer = match msg {
+            WM_APP_SCORE_UPDATE => POST_RETRY_SCORE_TIMER,
+            WM_APP_MATCH_EVENT => POST_RETRY_EVENT_TIMER,
+            WM_APP_MATCHES_DISCOVERED => POST_RETRY_DISCOVERED_TIMER,
+            WM_APP_UNTRACK => POST_RETRY_UNTRACK_TIMER,
+            _ => POST_RETRY_SCORE_TIMER,
+        };
+        let _ = SetTimer(hwnd, retry_timer, POST_RETRY_DELAY_MS, None);
+    }
+}
+
+#[cfg(windows)]
 unsafe fn present_dashboard_hwnd(state: &mut AppState, hwnd: HWND) {
+    // Resize-before-present: a height/DPI hop without a matching renderer
+    // resize clips or overdraws. Mirrors overlay present_overlay_now().
     let mut rect = RECT::default();
     let _ = GetWindowRect(hwnd, &mut rect);
+    let w = (rect.right - rect.left).max(1) as u32;
+    let h = (rect.bottom - rect.top).max(1) as u32;
+    if let Some(r) = state.dash_renderer.as_mut() {
+        let _ = r.resize(w, h);
+        debug_assert_eq!((r.w, r.h), (w as i32, h as i32));
+    }
     present_dashboard(
         state,
         POINT {
@@ -334,6 +543,7 @@ unsafe fn present_dashboard_hwnd(state: &mut AppState, hwnd: HWND) {
     );
 }
 
+#[cfg(windows)]
 unsafe fn restore_dashboard_for_drag(state: &mut AppState, grab_x: f32, grab_y: f32) {
     let hwnd = state.dash_hwnd;
     let restore = state.dashboard_restore_rect;
@@ -375,6 +585,7 @@ unsafe fn restore_dashboard_for_drag(state: &mut AppState, grab_x: f32, grab_y: 
     present_dashboard(state, pos);
 }
 
+#[cfg(windows)]
 unsafe extern "system" fn wnd_proc(
     hwnd: HWND,
     msg: u32,
@@ -383,7 +594,28 @@ unsafe extern "system" fn wnd_proc(
 ) -> LRESULT {
     let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AppState;
 
+    // Explorer restart recovery: re-ADD the tray icon (TaskbarCreated broadcast).
+    let taskbar_created = TASKBAR_CREATED_MSG.load(Ordering::Acquire);
+    if taskbar_created != 0 && msg == taskbar_created {
+        if let Some(state) = state_ptr.as_mut() {
+            state.tray.re_add();
+        }
+        return LRESULT(0);
+    }
+
     match msg {
+        WM_NCCREATE => {
+            // P0-6 backstop: honor a non-null lpCreateParams owner pointer.
+            // Both windows are created with null lpParam today (AppState is
+            // built after the HWNDs exist and shared via SetWindowLongPtrW),
+            // so this never clears an already-stored pointer. Must return
+            // TRUE or window creation fails.
+            let cs = &*(lparam.0 as *const CREATESTRUCTW);
+            if !cs.lpCreateParams.is_null() && GetWindowLongPtrW(hwnd, GWLP_USERDATA) == 0 {
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, cs.lpCreateParams as isize);
+            }
+            LRESULT(1)
+        }
         WM_LBUTTONUP => {
             if let Some(state) = state_ptr.as_mut() {
                 toggle_dashboard(state);
@@ -391,9 +623,16 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_PAINT => {
+            // P0-7: layered-window ULW presentation stays on the outside-paint
+            // paths (score/timer/event handlers). WM_PAINT only re-presents the
+            // last frame for RDP/UAC-obscured windows and must bracket with
+            // BeginPaint/EndPaint so the update region validates.
+            let mut ps = PAINTSTRUCT::default();
+            let _paint_dc = BeginPaint(hwnd, &mut ps);
             if let Some(state) = state_ptr.as_mut() {
                 present_overlay_now(hwnd, state);
             }
+            let _ = EndPaint(hwnd, &ps);
             let _ = ValidateRect(hwnd, None);
             LRESULT(0)
         }
@@ -405,11 +644,64 @@ unsafe extern "system" fn wnd_proc(
                         present_overlay_now(hwnd, state);
                     }
                 }
+            } else if wparam.0 == POST_RETRY_SCORE_TIMER {
+                // Single retry of a queue-full bridge post; handlers re-read fresh state.
+                // If the retry also hits a full queue, re-arm (post_checked policy)
+                // instead of silently dropping the update.
+                let _ = KillTimer(hwnd, POST_RETRY_SCORE_TIMER);
+                if PostMessageW(hwnd, WM_APP_SCORE_UPDATE, WPARAM(0), LPARAM(0)).is_err() {
+                    let _ = SetTimer(hwnd, POST_RETRY_SCORE_TIMER, POST_RETRY_DELAY_MS, None);
+                }
+            } else if wparam.0 == POST_RETRY_EVENT_TIMER {
+                let _ = KillTimer(hwnd, POST_RETRY_EVENT_TIMER);
+                if PostMessageW(hwnd, WM_APP_MATCH_EVENT, WPARAM(0), LPARAM(0)).is_err() {
+                    let _ = SetTimer(hwnd, POST_RETRY_EVENT_TIMER, POST_RETRY_DELAY_MS, None);
+                }
+            } else if wparam.0 == POST_RETRY_DISCOVERED_TIMER {
+                let _ = KillTimer(hwnd, POST_RETRY_DISCOVERED_TIMER);
+                if PostMessageW(hwnd, WM_APP_MATCHES_DISCOVERED, WPARAM(0), LPARAM(0)).is_err() {
+                    let _ = SetTimer(hwnd, POST_RETRY_DISCOVERED_TIMER, POST_RETRY_DELAY_MS, None);
+                }
+            } else if wparam.0 == POST_RETRY_UNTRACK_TIMER {
+                let _ = KillTimer(hwnd, POST_RETRY_UNTRACK_TIMER);
+                if PostMessageW(hwnd, WM_APP_UNTRACK, WPARAM(0), LPARAM(0)).is_err() {
+                    let _ = SetTimer(hwnd, POST_RETRY_UNTRACK_TIMER, POST_RETRY_DELAY_MS, None);
+                }
+            }
+            LRESULT(0)
+        }
+        WM_DPICHANGED => {
+            // lparam points at the system-suggested rect for the new DPI.
+            if let Some(state) = state_ptr.as_mut() {
+                let dpi = GetDpiForWindow(hwnd);
+                if dpi != 0 {
+                    state.dpi = dpi;
+                }
+                let suggested = *(lparam.0 as *const RECT);
+                let w = (suggested.right - suggested.left).max(1);
+                let h = (suggested.bottom - suggested.top).max(1);
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    suggested.left,
+                    suggested.top,
+                    w,
+                    h,
+                    SWP_NOACTIVATE | SWP_NOZORDER,
+                );
+                place_and_present_overlay(hwnd, state, &state.cache.get());
+            }
+            LRESULT(0)
+        }
+        WM_DISPLAYCHANGE => {
+            // Monitor topology changed: re-pin the overlay to the (possibly new) work area.
+            if let Some(state) = state_ptr.as_mut() {
+                place_and_present_overlay(hwnd, state, &state.cache.get());
             }
             LRESULT(0)
         }
         WM_HOTKEY => {
-            if wparam.0 == HOTKEY_ID as usize {
+            if wparam.0 == HOTKEY_ID as usize || wparam.0 == HOTKEY_ID_FALLBACK as usize {
                 if let Some(state) = state_ptr.as_mut() {
                     toggle_scoreboard(hwnd, state);
                 }
@@ -423,7 +715,9 @@ unsafe extern "system" fn wnd_proc(
                     place_and_present_overlay(hwnd, state, &score);
                 }
                 if let Some(s) = &score {
-                    let tip = format!("{} - {}", s.match_title, s.team1.score);
+                    // Full ESPN string for the tooltip (isolated + pre-truncated
+                    // to the 128-char tip cap).
+                    let tip = ui_text(&format!("{} — {}", s.match_title, s.team1.score), 110);
                     state.tray.update_tooltip(&tip);
                 }
             }
@@ -439,13 +733,17 @@ unsafe extern "system" fn wnd_proc(
                         state.renderer.set_event_flash(Some(event.clone()));
                         present_overlay_now(hwnd, state);
                         let timeout_ms: u32 = if event.event_type == MatchEventType::Win {
-                            8000
+                            WIN_TTL.as_millis() as u32
                         } else {
-                            3000
+                            EVENT_TTL.as_millis() as u32
                         };
-                        let _ = SetTimer(hwnd, OVERLAY_FLASH_TIMER, timeout_ms, None);
+                        // Reduced-motion: no flash timer — the in-card flash
+                        // persists until the next event or hide.
+                        if !reduced_motion() {
+                            let _ = SetTimer(hwnd, OVERLAY_FLASH_TIMER, timeout_ms, None);
+                        }
                     } else {
-                        let pos = bottom_right_popup_point();
+                        let pos = bottom_right_popup_point(hwnd);
                         if let Some(popup) = state.popup_win.as_mut() {
                             popup.show_event(event, pos);
                         }
@@ -456,47 +754,81 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_APP_MATCHES_DISCOVERED => {
             if let Some(state) = state_ptr.as_mut() {
-                let matches = state.match_state.active_matches.lock().ok().map(|active| {
-                    active
-                        .iter()
-                        .map(|m| DiscoveredMatch {
-                            sport: m.0.clone(),
-                            series_id: m.1.clone(),
-                            match_id: m.2.clone(),
-                            title: m.3.clone(),
-                            status: m.4.clone(),
-                            league_name: m.5.clone(),
-                            start_time: m.6.clone(),
-                        })
-                        .collect::<Vec<_>>()
-                });
-                if let Some(matches) = matches {
-                    state.dash_matches = matches;
-                    if IsWindowVisible(state.dash_hwnd).as_bool() {
-                        present_dashboard_hwnd(state, state.dash_hwnd);
-                    }
+                // Poison-recovering read: a panic elsewhere must not freeze
+                // the dashboard on a stale list.
+                let matches: Vec<DiscoveredMatch> = state
+                    .match_state
+                    .active_matches
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .iter()
+                    .map(|m| DiscoveredMatch {
+                        sport: m.0,
+                        series_id: m.1.clone(),
+                        match_id: m.2.clone(),
+                        title: m.3.clone(),
+                        status: m.4.clone(),
+                        league_name: m.5.clone(),
+                        start_time: m.6.clone(),
+                    })
+                    .collect();
+                state.dash_matches = matches;
+                if IsWindowVisible(state.dash_hwnd).as_bool() {
+                    present_dashboard_hwnd(state, state.dash_hwnd);
                 }
             }
             LRESULT(0)
         }
         WM_APP_SELECT_MATCH => {
-            let idx = wparam.0;
+            // Stable selection by heap-allocated match_id (Box::into_raw at the
+            // dashboard sender, freed here). Never an index: dash_matches can
+            // be replaced by WM_APP_MATCHES_DISCOVERED between hit-test and
+            // receipt, and an index would silently track the wrong match.
+            let raw = wparam.0 as *mut String;
+            if raw.is_null() {
+                return LRESULT(0);
+            }
+            // SAFETY: sender is the same-UI-thread dashboard proc, which only
+            // constructs this via Box::into_raw(Box::new(match_id)) and never
+            // touches it after a successful PostMessageW. Reclaim exactly once
+            // here (even when state is gone) so no path leaks.
+            let owned: Box<String> = unsafe { Box::from_raw(raw) };
             if let Some(state) = state_ptr.as_mut() {
-                if idx < state.dash_matches.len() {
-                    let m = state.dash_matches[idx].clone();
-                    state.cache.clear();
-                    state.renderer.set_event_flash(None);
-                    state.match_state.select_match(
-                        m.sport.clone(),
-                        m.series_id.clone(),
-                        m.match_id.clone(),
-                    );
-                    state.dash_selected_id = Some(m.match_id);
+                let match_id = owned.as_str();
+                if match_id.is_empty() {
+                    return LRESULT(0);
+                }
+                // Resolve the stable id against the *current* list, then
+                // require it to still be present in the engine's active list
+                // with a usable status before acting on it.
+                let current = state
+                    .dash_matches
+                    .iter()
+                    .find(|m| m.match_id == match_id)
+                    .cloned();
+                if let Some(m) = current {
+                    let still_active = state
+                        .match_state
+                        .active_matches
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .iter()
+                        .any(|a| a.2 == m.match_id && !a.4.is_empty());
+                    if !m.status.is_empty() && still_active {
+                        state.cache.clear();
+                        state.renderer.set_event_flash(None);
+                        state.match_state.select_match(
+                            m.sport,
+                            m.series_id.clone(),
+                            m.match_id.clone(),
+                        );
+                        state.dash_selected_id = Some(m.match_id);
 
-                    show_overlay(hwnd, state, &None);
+                        show_overlay(hwnd, state, &None);
 
-                    if IsWindowVisible(state.dash_hwnd).as_bool() {
-                        present_dashboard_hwnd(state, state.dash_hwnd);
+                        if IsWindowVisible(state.dash_hwnd).as_bool() {
+                            present_dashboard_hwnd(state, state.dash_hwnd);
+                        }
                     }
                 }
             }
@@ -539,7 +871,7 @@ unsafe extern "system" fn wnd_proc(
                     ID_TRAY_TOGGLE_SCORE => toggle_scoreboard(hwnd, state),
                     ID_TRAY_OPEN_DASHBOARD => show_dashboard(state),
                     ID_TRAY_UNTRACK_MATCH => {
-                        let _ = PostMessageW(hwnd, WM_APP_UNTRACK, WPARAM(0), LPARAM(0));
+                        post_ui_msg(hwnd, WM_APP_UNTRACK, WPARAM(0), LPARAM(0));
                     }
                     ID_TRAY_QUIT => {
                         let _ = DestroyWindow(hwnd);
@@ -554,8 +886,46 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_DESTROY => {
+            // P0-6 teardown order: unregister hotkeys, explicitly remove the
+            // tray icon + destroy owned windows BEFORE PostQuitMessage (the
+            // TrayIcon Drop in WM_NCDESTROY is the backstop, not the plan, so
+            // no ghost icon survives a forced quit).
             let _ = UnregisterHotKey(hwnd, HOTKEY_ID);
+            let _ = UnregisterHotKey(hwnd, HOTKEY_ID_FALLBACK);
+            if let Some(state) = state_ptr.as_mut() {
+                state.tray.remove();
+                if !state.dash_hwnd.0.is_null() {
+                    let _ = DestroyWindow(state.dash_hwnd);
+                }
+                if let Some(popup) = state.popup_win.as_ref() {
+                    if !popup.hwnd.0.is_null() {
+                        let _ = DestroyWindow(popup.hwnd);
+                    }
+                }
+                // P0-9 COM balance: only uninitialize what we initialized.
+                if COM_NEEDS_UNINIT.swap(false, Ordering::Release) {
+                    CoUninitialize();
+                }
+            }
             PostQuitMessage(0);
+            LRESULT(0)
+        }
+        WM_NCDESTROY => {
+            // P0-6 single owner: the AppState Box is freed exactly once here.
+            // dash_hwnd shares the same raw ptr (set at startup); it is never
+            // freed through the dashboard proc. Null-check + clear both
+            // USERDATA slots to guard against double-free.
+            if !state_ptr.is_null() {
+                let dash_hwnd = state_ptr
+                    .as_ref()
+                    .map(|s| s.dash_hwnd)
+                    .unwrap_or(HWND::default());
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+                if !dash_hwnd.0.is_null() {
+                    SetWindowLongPtrW(dash_hwnd, GWLP_USERDATA, 0);
+                }
+                drop(Box::from_raw(state_ptr));
+            }
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
@@ -563,36 +933,128 @@ unsafe extern "system" fn wnd_proc(
 }
 
 // Dashboard Window Procedure
+#[cfg(windows)]
 unsafe extern "system" fn dashboard_wnd_proc(
     hwnd: HWND,
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    let parent_hwnd = HWND(HMAIN.load(Ordering::Relaxed) as *mut _);
-    let state_ptr = GetWindowLongPtrW(parent_hwnd, GWLP_USERDATA) as *mut AppState;
+    // P0-6: prefer this window's own GWLP_USERDATA (set alongside the main
+    // window to the same single-owner Box). Fall back to the HMAIN parent
+    // proxy only when own USERDATA is still zero.
+    let own = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+    let state_ptr = if own != 0 {
+        own as *mut AppState
+    } else {
+        let parent_hwnd = HWND(HMAIN.load(Ordering::Acquire) as *mut _);
+        GetWindowLongPtrW(parent_hwnd, GWLP_USERDATA) as *mut AppState
+    };
+    // Parent handle for cross-window posts (dashboard → main). Always resolved
+    // via HMAIN; never cached across calls.
+    let parent_hwnd = HWND(HMAIN.load(Ordering::Acquire) as *mut _);
 
     match msg {
+        WM_NCCREATE => {
+            // Same backstop as the main proc: honor a non-null lpCreateParams
+            // owner pointer without ever clearing an already-stored one.
+            // Must return TRUE or window creation fails.
+            let cs = &*(lparam.0 as *const CREATESTRUCTW);
+            if !cs.lpCreateParams.is_null() && GetWindowLongPtrW(hwnd, GWLP_USERDATA) == 0 {
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, cs.lpCreateParams as isize);
+            }
+            LRESULT(1)
+        }
+        WM_GETMINMAXINFO => {
+            // Clamp maximized geometry to the monitor work area (WS_POPUP has no frame to do it).
+            let mmi = &mut *(lparam.0 as *mut MINMAXINFO);
+            let wa = work_area_for(hwnd);
+            mmi.ptMaxPosition = POINT {
+                x: wa.left,
+                y: wa.top,
+            };
+            mmi.ptMaxSize = POINT {
+                x: wa.right - wa.left,
+                y: wa.bottom - wa.top,
+            };
+            mmi.ptMinTrackSize = POINT { x: 640, y: 480 };
+            LRESULT(0)
+        }
+        WM_DPICHANGED => {
+            // Adopt the system-suggested rect, resize the renderer, re-present.
+            if let Some(state) = state_ptr.as_mut() {
+                let suggested = *(lparam.0 as *const RECT);
+                let w = (suggested.right - suggested.left).max(1) as u32;
+                let h = (suggested.bottom - suggested.top).max(1) as u32;
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    suggested.left,
+                    suggested.top,
+                    w as i32,
+                    h as i32,
+                    SWP_NOACTIVATE,
+                );
+                if let Some(r) = state.dash_renderer.as_mut() {
+                    let _ = r.resize(w, h);
+                }
+                present_dashboard_hwnd(state, hwnd);
+            }
+            LRESULT(0)
+        }
+        WM_DISPLAYCHANGE => {
+            // Monitor topology changed: keep maximized dashboards glued to the work area.
+            if let Some(state) = state_ptr.as_mut() {
+                if state.dash_renderer.as_ref().is_some_and(|r| r.is_maximized) {
+                    let wa = work_area_for(hwnd);
+                    let _ = SetWindowPos(
+                        hwnd,
+                        None,
+                        wa.left,
+                        wa.top,
+                        wa.right - wa.left,
+                        wa.bottom - wa.top,
+                        SWP_NOACTIVATE,
+                    );
+                    if let Some(r) = state.dash_renderer.as_mut() {
+                        let _ = r.resize((wa.right - wa.left) as u32, (wa.bottom - wa.top) as u32);
+                    }
+                    present_dashboard_hwnd(state, hwnd);
+                }
+            }
+            LRESULT(0)
+        }
         WM_LBUTTONDOWN => {
             let x = (lparam.0 & 0xFFFF) as i16 as f32;
             let y = (lparam.0 >> 16) as i16 as f32;
 
-            if let Some(state) = state_ptr.as_mut() {
+            // P0-8: never hold `&mut AppState` across SendMessageW. The send
+            // re-enters dashboard_wnd_proc, which takes its own &mut — two live
+            // &mut to the same Box is UB. Scope the borrow to a bool, drop it,
+            // then send (the re-entered proc re-fetches state_ptr itself).
+            let start_drag = if let Some(state) = state_ptr.as_mut() {
                 let hit = state
                     .dash_renderer
                     .as_ref()
                     .and_then(|r| r.hit_test(x, y, state.dash_matches.len()));
                 if matches!(hit, Some(HitTarget::TitleBar)) {
                     restore_dashboard_for_drag(state, x, y);
-                    let _ = ReleaseCapture();
-                    let _ = SendMessageW(
-                        hwnd,
-                        WM_NCLBUTTONDOWN,
-                        WPARAM(HTCAPTION as usize),
-                        LPARAM(0),
-                    );
-                    return LRESULT(0);
+                    true
+                } else {
+                    false
                 }
+            } else {
+                false
+            };
+            if start_drag {
+                let _ = ReleaseCapture();
+                let _ = SendMessageW(
+                    hwnd,
+                    WM_NCLBUTTONDOWN,
+                    WPARAM(HTCAPTION as usize),
+                    LPARAM(0),
+                );
+                return LRESULT(0);
             }
             LRESULT(0)
         }
@@ -648,23 +1110,65 @@ unsafe extern "system" fn dashboard_wnd_proc(
                 if hover_changed {
                     present_dashboard_hwnd(state, hwnd);
                 }
+                // Arm TME_LEAVE so a mouse-leave clears sticky hover (no MOUSEMOVE storm).
+                if let Some(state) = state_ptr.as_mut() {
+                    if let Some(r) = state.dash_renderer.as_mut() {
+                        if !r.mouse_tracking {
+                            let mut tme = TRACKMOUSEEVENT {
+                                cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                                dwFlags: TME_LEAVE,
+                                hwndTrack: hwnd,
+                                dwHoverTime: 0,
+                            };
+                            if TrackMouseEvent(&mut tme).is_ok() {
+                                r.mouse_tracking = true;
+                            }
+                        }
+                    }
+                }
+            }
+            LRESULT(0)
+        }
+        WM_MOUSELEAVE => {
+            if let Some(state) = state_ptr.as_mut() {
+                let had_hover = state.dash_renderer.as_ref().is_some_and(|r| {
+                    r.hover_index.is_some()
+                        || r.action_hover_index.is_some()
+                        || r.min_hover
+                        || r.max_hover
+                        || r.close_hover
+                        || r.cricket_hover
+                        || r.football_hover
+                });
+                if let Some(r) = state.dash_renderer.as_mut() {
+                    r.clear_hover();
+                }
+                if had_hover {
+                    present_dashboard_hwnd(state, hwnd);
+                }
             }
             LRESULT(0)
         }
         WM_MOUSEWHEEL => {
             if let Some(state) = state_ptr.as_mut() {
-                let delta = ((wparam.0 >> 16) & 0xffff) as i16;
+                // High-resolution wheels send partial deltas: accumulate to WHEEL_DELTA notches.
+                let delta = ((wparam.0 >> 16) & 0xffff) as u16 as i16 as i32;
                 if let Some(r) = state.dash_renderer.as_mut() {
-                    r.scroll_by(if delta < 0 { 1 } else { -1 }, state.dash_matches.len());
+                    r.accumulate_wheel(delta);
                 }
                 present_dashboard_hwnd(state, hwnd);
             }
             LRESULT(0)
         }
         WM_PAINT => {
+            // P0-7: same contract as the overlay proc — ULW stays on the
+            // outside-paint paths; WM_PAINT re-presents under Begin/EndPaint.
+            let mut ps = PAINTSTRUCT::default();
+            let _paint_dc = BeginPaint(hwnd, &mut ps);
             if let Some(state) = state_ptr.as_mut() {
                 present_dashboard_hwnd(state, hwnd);
             }
+            let _ = EndPaint(hwnd, &ps);
             let _ = ValidateRect(hwnd, None);
             LRESULT(0)
         }
@@ -722,21 +1226,44 @@ unsafe extern "system" fn dashboard_wnd_proc(
                         }
                     }
                     Some(Some(HitTarget::MatchAction(idx))) => {
+                        // Stable select: post a heap-allocated match_id, never the
+                        // hit-test index (TOCTOU across list refreshes). The main
+                        // proc reclaims via Box::from_raw on receipt.
+                        // PostMessageW is async (no re-entrancy), so posting while
+                        // holding `state` is safe (unlike SendMessageW, cf. P0-8).
                         if idx < state.dash_matches.len() {
-                            let selected = state
-                                .dash_selected_id
-                                .as_ref()
-                                .is_some_and(|id| id == &state.dash_matches[idx].match_id);
-                            if selected {
-                                let _ =
-                                    PostMessageW(parent_hwnd, WM_APP_UNTRACK, WPARAM(0), LPARAM(0));
+                            let match_id = state.dash_matches[idx].match_id.clone();
+                            if match_id.is_empty() {
+                                // Stale/empty id: ignore, user can click again.
                             } else {
-                                let _ = PostMessageW(
-                                    parent_hwnd,
-                                    WM_APP_SELECT_MATCH,
-                                    WPARAM(idx),
-                                    LPARAM(0),
-                                );
+                                let selected = state
+                                    .dash_selected_id
+                                    .as_ref()
+                                    .is_some_and(|id| id == &match_id);
+                                if selected {
+                                    post_ui_msg(parent_hwnd, WM_APP_UNTRACK, WPARAM(0), LPARAM(0));
+                                } else {
+                                    let raw = Box::into_raw(Box::new(match_id));
+                                    if PostMessageW(
+                                        parent_hwnd,
+                                        WM_APP_SELECT_MATCH,
+                                        WPARAM(raw as usize),
+                                        LPARAM(0),
+                                    )
+                                    .is_err()
+                                    {
+                                        // Queue full: reclaim to avoid a leak; the
+                                        // click is user-retryable. Never double-post
+                                        // the same pointer (would double-free).
+                                        unsafe {
+                                            drop(Box::from_raw(raw));
+                                        }
+                                        #[cfg(debug_assertions)]
+                                        sportspulse::render::dbglog(
+                                            "select post queue-full, reclaimed (click retry)",
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
@@ -757,16 +1284,22 @@ unsafe extern "system" fn dashboard_wnd_proc(
     }
 }
 
+#[cfg(windows)]
 fn spawn_engine_worker(
     cache: ScoreCache,
     match_state: ActiveMatchesState,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_multi_thread()
+        // P0-9: a dead runtime must surface a message box, not a panic in a
+        // worker thread (invisible under windows_subsystem).
+        let rt = match tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .build()
-            .expect("tokio runtime build");
+        {
+            Ok(rt) => rt,
+            Err(_) => unsafe { fatal_startup("tokio runtime build failed") },
+        };
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
 
@@ -779,26 +1312,43 @@ fn spawn_engine_worker(
 
         // Event listener bridge to Win32 messages
         rt.block_on(async move {
+            // NOTE: the engine-facing sender is unbounded (fetcher signature is owned
+            // by the P0 agent). Coalescing happens here on receipt instead: bursts of
+            // ScoreChanged collapse to the latest before a single PostMessageW, so a
+            // stalled UI thread can never pile up stale score posts.
             while let Some(ev) = rx.recv().await {
-                let h = HMAIN.load(Ordering::Relaxed);
+                let h = HMAIN.load(Ordering::Acquire);
                 if h != 0 {
                     let hwnd = HWND(h as *mut _);
                     match ev {
                         AppEvent::ScoreChanged(_) => {
-                            let _ = unsafe {
-                                PostMessageW(hwnd, WM_APP_SCORE_UPDATE, WPARAM(0), LPARAM(0))
-                            };
+                            // Drain any further queued ScoreChanged; only the latest matters.
+                            while let Ok(next) = rx.try_recv() {
+                                match next {
+                                    AppEvent::ScoreChanged(_) => continue,
+                                    // Non-score events must not be swallowed: post them now.
+                                    AppEvent::MatchEvent(_) => post_checked(
+                                        hwnd,
+                                        WM_APP_MATCH_EVENT,
+                                        POST_RETRY_EVENT_TIMER,
+                                    ),
+                                    AppEvent::MatchesDiscovered(_) => post_checked(
+                                        hwnd,
+                                        WM_APP_MATCHES_DISCOVERED,
+                                        POST_RETRY_DISCOVERED_TIMER,
+                                    ),
+                                }
+                            }
+                            post_checked(hwnd, WM_APP_SCORE_UPDATE, POST_RETRY_SCORE_TIMER);
                         }
                         AppEvent::MatchEvent(_) => {
-                            let _ = unsafe {
-                                PostMessageW(hwnd, WM_APP_MATCH_EVENT, WPARAM(0), LPARAM(0))
-                            };
+                            post_checked(hwnd, WM_APP_MATCH_EVENT, POST_RETRY_EVENT_TIMER)
                         }
-                        AppEvent::MatchesDiscovered(_) => {
-                            let _ = unsafe {
-                                PostMessageW(hwnd, WM_APP_MATCHES_DISCOVERED, WPARAM(0), LPARAM(0))
-                            };
-                        }
+                        AppEvent::MatchesDiscovered(_) => post_checked(
+                            hwnd,
+                            WM_APP_MATCHES_DISCOVERED,
+                            POST_RETRY_DISCOVERED_TIMER,
+                        ),
                     }
                 }
             }
@@ -806,18 +1356,50 @@ fn spawn_engine_worker(
     })
 }
 
+/// Post from the engine bridge; on a queue-full failure arm a one-shot timer so
+/// the UI thread retries the (idempotent — handlers re-read fresh state) message once.
+#[cfg(windows)]
+unsafe fn post_checked(hwnd: HWND, msg: u32, retry_timer: usize) {
+    if PostMessageW(hwnd, msg, WPARAM(0), LPARAM(0)).is_err() {
+        let _ = SetTimer(hwnd, retry_timer, POST_RETRY_DELAY_MS, None);
+    }
+}
+
+#[cfg(windows)]
 fn main() {
     unsafe {
-        // COM STA Initialization
-        let _ = windows::Win32::System::Com::CoInitializeEx(
+        // Single instance: a second launch exits immediately (mutex held for process lifetime).
+        let mutex_name: Vec<u16> = "Local\\SportsPulseSingleInstance\0"
+            .encode_utf16()
+            .collect();
+        let _instance_mutex = CreateMutexW(None, false, PCWSTR(mutex_name.as_ptr()));
+        if GetLastError() == windows::Win32::Foundation::ERROR_ALREADY_EXISTS {
+            return;
+        }
+
+        // COM STA Initialization (P0-9): S_OK/S_FALSE both mean COM is usable
+        // (S_FALSE = already initialized on this thread — do NOT uninitialize).
+        // RPC_E_CHANGED_MODE = already initialized in another mode; anything
+        // else is a degraded fallback — startup proceeds, never hard-blocks.
+        let com_hr = windows::Win32::System::Com::CoInitializeEx(
             None,
             windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
         );
+        if com_hr == S_OK {
+            COM_NEEDS_UNINIT.store(true, Ordering::Release);
+        } else if com_hr == S_FALSE || com_hr == RPC_E_CHANGED_MODE {
+            // Usable without owning a ref; WM_DESTROY must skip CoUninitialize.
+        } else {
+            // Degraded fallback: D2D/WIC may still work; continue startup.
+        }
 
         // DPI Awareness Context (PerMonitorV2)
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
-        let hinstance = GetModuleHandleW(None).expect("module handle");
+        let hinstance = match GetModuleHandleW(None) {
+            Ok(h) => h,
+            Err(_) => fatal_startup("GetModuleHandleW failed during startup"),
+        };
 
         // 1. Register Main Scoreboard Window Class
         let wc = WNDCLASSEXW {
@@ -845,8 +1427,14 @@ fn main() {
         let _ = RegisterClassExW(&wc_dash);
 
         // 3. Create Main Scoreboard Layered Window
-        let score_pos = bottom_right_score_point();
-        let hwnd = CreateWindowExW(
+        // No window exists yet, so seed from the primary work area; the overlay
+        // re-pins itself per-monitor (work_area_for) on every present after this.
+        let primary_wa = work_area();
+        let score_pos = POINT {
+            x: primary_wa.right - SCORE_W as i32 - 12,
+            y: primary_wa.bottom - SCORE_H as i32 - 12,
+        };
+        let hwnd = match CreateWindowExW(
             WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
             CLASS_NAME,
             w!("SportsPulse"),
@@ -859,14 +1447,16 @@ fn main() {
             HMENU::default(),
             hinstance,
             None,
-        )
-        .expect("create main window");
+        ) {
+            Ok(w) => w,
+            Err(_) => fatal_startup("CreateWindowExW failed for main scoreboard window"),
+        };
 
         HMAIN.store(hwnd.0 as usize, Ordering::Release);
 
         // 4. Create Dashboard Window
-        let dash_pos = center_screen_point(DASH_NORMAL_W, DASH_NORMAL_H);
-        let dash_hwnd = CreateWindowExW(
+        let dash_pos = center_screen_point(hwnd, DASH_NORMAL_W, DASH_NORMAL_H);
+        let dash_hwnd = match CreateWindowExW(
             // The discovery dashboard is a normal taskbar application while open.
             // The lightweight scoreboard itself remains a tray-only topmost overlay.
             WS_EX_LAYERED | WS_EX_APPWINDOW,
@@ -881,17 +1471,25 @@ fn main() {
             HMENU::default(),
             hinstance,
             None,
-        )
-        .expect("create dashboard window");
+        ) {
+            Ok(w) => w,
+            Err(_) => fatal_startup("CreateWindowExW failed for dashboard window"),
+        };
 
         // 5. Create Components
-        let renderer = Renderer::new(hwnd, SCORE_W, SCORE_H).expect("d2d scoreboard renderer");
+        let renderer = match Renderer::new(hwnd, SCORE_W, SCORE_H) {
+            Ok(r) => r,
+            Err(_) => fatal_startup("Direct2D scoreboard renderer init failed"),
+        };
         let dash_renderer = DashboardRenderer::new(dash_hwnd, DASH_NORMAL_W, DASH_NORMAL_H).ok();
         let popup_win = MiniPopupWindow::create().ok();
         let tray = TrayIcon::new(hwnd, "SportsPulse - Live Scores");
 
         let cache = ScoreCache::new();
         let match_state = ActiveMatchesState::new();
+
+        // Real DPI for this monitor (96 fallback); refreshed on WM_DPICHANGED.
+        let dpi = GetDpiForWindow(hwnd);
 
         let app_state = Box::new(AppState {
             renderer,
@@ -909,19 +1507,47 @@ fn main() {
                 right: dash_pos.x + DASH_NORMAL_W as i32,
                 bottom: dash_pos.y + DASH_NORMAL_H as i32,
             },
+            dpi: if dpi == 0 { 96 } else { dpi },
         });
 
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(app_state) as isize);
+        // P0-6: single Box owner shared via raw ptr. Both windows point at the
+        // same AppState; it is freed exactly once in main WM_NCDESTROY (never
+        // through the dashboard proc). The dashboard prefers its own USERDATA
+        // and falls back to the HMAIN parent proxy only when zero.
+        let app_ptr = Box::into_raw(app_state);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, app_ptr as isize);
+        SetWindowLongPtrW(dash_hwnd, GWLP_USERDATA, app_ptr as isize);
 
-        // 6. Register Global Hotkey Ctrl + Alt + Space
-        let _ = RegisterHotKey(
+        // 6. Register Global Hotkey Ctrl + Alt + Space, with a fallback id when taken.
+        // (A fallback *id* cannot beat a taken *chord*; ERROR_HOTKEY_ALREADY_REGISTERED
+        // still needs a user-facing remap — P0-11 owns that. This at least retries
+        // registration instead of silently running hotkey-less on id collision.)
+        if RegisterHotKey(
             hwnd,
             HOTKEY_ID,
             HOT_KEY_MODIFIERS(MOD_CONTROL.0 | MOD_ALT.0),
             VK_SPACE.0 as u32,
-        );
+        )
+        .is_err()
+        {
+            #[cfg(debug_assertions)]
+            sportspulse::render::dbglog("primary hotkey id taken, trying fallback id");
+            if let Err(e) = RegisterHotKey(
+                hwnd,
+                HOTKEY_ID_FALLBACK,
+                HOT_KEY_MODIFIERS(MOD_CONTROL.0 | MOD_ALT.0),
+                VK_SPACE.0 as u32,
+            ) {
+                // Non-fatal: app runs hotkey-less (tray + click still work).
+                // Never let_ the second failure — it means the chord itself is
+                // taken, which needs a user-facing remap (P0-11). Surface a
+                // dashboard toast instead of failing silently.
+                HOTKEY_CONFLICT.store(true, Ordering::Release);
+                sportspulse::render::dbglog(&format!("fallback hotkey failed: {e:?}"));
+            }
+        }
 
-        // 7. Start with the dashboard visible (original Tauri: overlay hidden, dashboard shown).
+        // 7. Start with the dashboard visible (overlay hidden until Track).
         let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AppState;
         if let Some(state) = state_ptr.as_mut() {
             present_dashboard(state, dash_pos);
@@ -944,6 +1570,18 @@ fn main() {
         }
 
         HMAIN.store(0, Ordering::Release);
+        // The engine thread owns the Tokio runtime and blocks on the event channel;
+        // it cannot be joined from here (std threads have no abort). Detaching via
+        // drop is teardown-safe: process exit reclaims the runtime and its sockets.
         drop(engine_handle);
     }
+}
+
+/// Non-Windows fallback (P0-9): the app is Win32/Direct2D-only, but every bin
+/// must still provide `main` so `cargo check` passes on Linux. All Windows
+/// code above is `#[cfg(windows)]`-gated (the old file-level `#![cfg(windows)]`
+/// would have gated this stub out too, defeating it).
+#[cfg(not(windows))]
+fn main() {
+    eprintln!("SportsPulse is Windows-only.");
 }

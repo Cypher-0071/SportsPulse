@@ -1,8 +1,8 @@
-# Product
+# Product — SportsPulse Native Win32
 
-## Register
+## Status
 
-product
+Pure Win32 native (Rust + Direct2D/DirectWrite). Tauri/WebView stack removed. See README.md and docs/techdebt.md.
 
 ## Users
 

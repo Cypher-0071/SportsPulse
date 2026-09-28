@@ -4,30 +4,29 @@
 
 #![allow(dead_code)]
 
+use std::cell::RefCell;
+use std::marker::PhantomData;
+
 use windows::core::*;
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
-use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F,
+use windows::Win32::Foundation::{
+    COLORREF, D2DERR_RECREATE_TARGET, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
 };
+use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_RECT_F};
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateFactory, ID2D1Factory, ID2D1RenderTarget, ID2D1SolidColorBrush,
-    D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_FEATURE_LEVEL_DEFAULT,
-    D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1_ROUNDED_RECT,
+    ID2D1RenderTarget, ID2D1SolidColorBrush, D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_ROUNDED_RECT,
     D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
 };
 use windows::Win32::Graphics::DirectWrite::{
-    DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
-    DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
+    IDWriteTextFormat, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
     DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD,
     DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT,
     DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING,
     DWRITE_WORD_WRAPPING_NO_WRAP,
 };
-use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetWindowDC, SelectObject,
-    AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS,
-    HBITMAP, HDC,
+    BeginPaint, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, EndPaint,
+    GetWindowDC, ReleaseDC, SelectObject, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER,
+    BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ, PAINTSTRUCT,
 };
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_WICPixelFormat32bppPBGRA, IWICBitmap, IWICImagingFactory,
@@ -35,15 +34,21 @@ use windows::Win32::Graphics::Imaging::{
 };
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, KillTimer, LoadCursorW, RegisterClassExW, SetTimer,
-    SetWindowPos, ShowWindow, UpdateLayeredWindow, CS_HREDRAW, CS_VREDRAW, HCURSOR, HMENU,
-    HWND_TOPMOST, IDC_ARROW, SWP_NOACTIVATE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, ULW_ALPHA,
-    WM_CLOSE, WM_DESTROY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, GetWindowLongPtrW, GetWindowRect, KillTimer, LoadCursorW,
+    RegisterClassExW, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, UpdateLayeredWindow,
+    CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HCURSOR, HMENU, HWND_TOPMOST, IDC_ARROW, SWP_NOACTIVATE,
+    SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, ULW_ALPHA, WM_CLOSE, WM_DESTROY, WM_KEYDOWN,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_PAINT, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use crate::engine::models::{MatchEvent, MatchEventType};
+use crate::render::{
+    d2d_factory, dwrite_factory, has_word, high_contrast, software_rt_props, ui_text, EVENT_TTL,
+    WIN_TTL,
+};
 
 pub const POPUP_W: u32 = 320;
 pub const POPUP_H: u32 = 84;
@@ -124,6 +129,8 @@ fn clean_event_detail(description: &str, event_type: MatchEventType) -> String {
 
 struct Fmt {
     fmt: IDWriteTextFormat,
+    // Persistent UTF-16 scratch buffer: avoids one Vec<u16> alloc per DrawText.
+    buf: RefCell<Vec<u16>>,
 }
 
 impl Fmt {
@@ -134,9 +141,11 @@ impl Fmt {
         rect: &D2D_RECT_F,
         brush: &ID2D1SolidColorBrush,
     ) {
-        let wide: Vec<u16> = s.encode_utf16().collect();
+        let mut buf = self.buf.borrow_mut();
+        buf.clear();
+        buf.extend(s.encode_utf16());
         rt.DrawText(
-            &wide,
+            buf.as_slice(),
             &self.fmt,
             rect,
             brush,
@@ -148,10 +157,12 @@ impl Fmt {
 
 pub struct PopupRenderer {
     hwnd: HWND,
+    wic_factory: IWICImagingFactory,
     wic: IWICBitmap,
     rt: ID2D1RenderTarget,
     mem_dc: HDC,
     hbmp: HBITMAP,
+    old_bmp: HGDIOBJ,
     bits: *mut core::ffi::c_void,
     w: i32,
     h: i32,
@@ -173,37 +184,42 @@ pub struct PopupRenderer {
     win_bg: ID2D1SolidColorBrush,
     win_text: ID2D1SolidColorBrush,
     fmt_badge: Fmt,
+    fmt_emoji: Fmt,
     fmt_title: Fmt,
     fmt_desc: Fmt,
     fmt_score: Fmt,
+    // Last presented event, so WM_PAINT can re-present after RDP/UAC blanks.
+    last_event: Option<MatchEvent>,
+    // Persistent pixel scratch buffer: avoids a per-present alloc + double copy.
+    buf: Vec<u8>,
+    // STA-bound COM/GDI state must never cross threads.
+    _no_send: PhantomData<*const ()>,
 }
 
 impl PopupRenderer {
     pub unsafe fn new(hwnd: HWND, w: u32, h: u32) -> Result<Self> {
-        let factory: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
-        let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
+        // Shared process-lifetime factories (WIC stays per-renderer: fixed size, no resize).
+        let factory = d2d_factory()?;
+        let dwrite = dwrite_factory()?;
         let wicf: IWICImagingFactory =
             CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
 
         let wic =
             wicf.CreateBitmap(w, h, &GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand)?;
 
-        let props = D2D1_RENDER_TARGET_PROPERTIES {
-            r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
-            pixelFormat: D2D1_PIXEL_FORMAT {
-                format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-            },
-            dpiX: 0.0,
-            dpiY: 0.0,
-            usage: windows::Win32::Graphics::Direct2D::D2D1_RENDER_TARGET_USAGE_NONE,
-            minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
-        };
-        let rt = factory.CreateWicBitmapRenderTarget(&wic, &props)?;
+        let rt = factory.CreateWicBitmapRenderTarget(&wic, &software_rt_props())?;
         rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
 
         let screen_dc = GetWindowDC(None);
+        if screen_dc.is_invalid() {
+            return Err(Error::from_win32());
+        }
         let mem_dc = CreateCompatibleDC(screen_dc);
+        // Released before any fallible op below, so every early-`?` path is covered.
+        let _ = ReleaseDC(None, screen_dc);
+        if mem_dc.is_invalid() {
+            return Err(Error::from_win32());
+        }
         let mut bmi = BITMAPINFO::default();
         bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
         bmi.bmiHeader.biWidth = w as i32;
@@ -214,23 +230,29 @@ impl PopupRenderer {
 
         let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
         let hbmp = CreateDIBSection(mem_dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)?;
-        SelectObject(mem_dc, hbmp);
+        if hbmp.is_invalid() {
+            let _ = DeleteDC(mem_dc);
+            return Err(Error::from_win32());
+        }
+        let old_bmp = SelectObject(mem_dc, hbmp);
 
-        // Windows 11 Dark Theme: #1E1E22 at 94% opacity
-        let bg_brush = rt.CreateSolidColorBrush(&color(0.1176, 0.1176, 0.1333, 0.94), None)?;
-        let border_brush = rt.CreateSolidColorBrush(&color(1.0, 1.0, 1.0, 0.09), None)?;
+        // Unified palette: opaque #202020 bg + #3E3E3E border, shared with overlay/dashboard.
+        let bg_brush = rt.CreateSolidColorBrush(&color(0.125, 0.125, 0.125, 1.0), None)?;
+        let border_brush = rt.CreateSolidColorBrush(&color(0.245, 0.245, 0.245, 1.0), None)?;
         let white_brush = rt.CreateSolidColorBrush(&color(0.96, 0.96, 0.98, 1.0), None)?;
         let dim_brush = rt.CreateSolidColorBrush(&color(0.62, 0.62, 0.67, 1.0), None)?;
-        let subtle_brush = rt.CreateSolidColorBrush(&color(0.42, 0.42, 0.47, 1.0), None)?;
+        // Raised to dim range (was 0.42): description text must clear 4.5.
+        let subtle_brush = rt.CreateSolidColorBrush(&color(0.65, 0.65, 0.65, 1.0), None)?;
 
         // Event Badge Colors:
         // Wicket: Soft Red
         let wicket_bg = rt.CreateSolidColorBrush(&color(0.600, 0.106, 0.106, 0.35), None)?;
         let wicket_text = rt.CreateSolidColorBrush(&color(0.973, 0.294, 0.333, 1.0), None)?;
 
-        // Soccer red card: original mini_popup #d90429
+        // Soccer red card: light red text on the dark-red pill (#FF6B74 clears
+        // 4.5 on dark; the old #D90429 text did not).
         let redcard_bg = rt.CreateSolidColorBrush(&color(0.851, 0.016, 0.161, 0.40), None)?;
-        let redcard_text = rt.CreateSolidColorBrush(&color(0.851, 0.016, 0.161, 1.0), None)?;
+        let redcard_text = rt.CreateSolidColorBrush(&color(1.0, 0.42, 0.454, 1.0), None)?;
 
         // Boundary Four: Sky Blue / Cyan
         let four_bg = rt.CreateSolidColorBrush(&color(0.012, 0.412, 0.631, 0.35), None)?;
@@ -262,15 +284,36 @@ impl PopupRenderer {
                 fmt.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
                 fmt.SetTextAlignment(align)?;
                 fmt.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
-                Ok(Fmt { fmt })
+                Ok(Fmt {
+                    fmt,
+                    buf: RefCell::new(Vec::new()),
+                })
             };
+
+        // Emoji badge font: "Segoe UI" has no 🏆/🟥/🏏/⚽/💥/⚡ glyphs, so badge
+        // labels get an explicit Emoji family instead of tofu boxes.
+        // Mirrors dashboard.rs fmt_icon (Segoe UI Emoji) pattern.
+        let fmt_emoji_fmt = dwrite.CreateTextFormat(
+            w!("Segoe UI Emoji"),
+            None,
+            DWRITE_FONT_WEIGHT_BOLD,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            10.0,
+            w!("en-us"),
+        )?;
+        fmt_emoji_fmt.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+        fmt_emoji_fmt.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+        fmt_emoji_fmt.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
 
         Ok(Self {
             hwnd,
+            wic_factory: wicf,
             wic,
             rt,
             mem_dc,
             hbmp,
+            old_bmp,
             bits,
             w: w as i32,
             h: h as i32,
@@ -292,6 +335,10 @@ impl PopupRenderer {
             win_bg,
             win_text,
             fmt_badge: mk_font(10.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
+            fmt_emoji: Fmt {
+                fmt: fmt_emoji_fmt,
+                buf: RefCell::new(Vec::new()),
+            },
             fmt_title: mk_font(
                 12.5,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
@@ -307,7 +354,95 @@ impl PopupRenderer {
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 DWRITE_TEXT_ALIGNMENT_TRAILING,
             )?,
+            last_event: None,
+            buf: Vec::new(),
+            _no_send: PhantomData,
         })
+    }
+
+    /// Force a full rebuild at the current size (D2DERR_RECREATE_TARGET
+    /// recovery). The popup is fixed-size so there is no resize(); callers
+    /// retry present() once after this returns Ok — the same policy as the
+    /// overlay/dashboard outside-paint paths in main.rs.
+    pub unsafe fn recreate(&mut self) -> Result<()> {
+        // Park the previously selected bitmap; deleting a selected GDI object is a no-op leak.
+        if !self.mem_dc.is_invalid() {
+            let _ = SelectObject(self.mem_dc, self.old_bmp);
+        }
+        if !self.hbmp.is_invalid() {
+            let _ = DeleteObject(self.hbmp);
+        }
+
+        let factory = d2d_factory()?;
+        let wic = self.wic_factory.CreateBitmap(
+            self.w as u32,
+            self.h as u32,
+            &GUID_WICPixelFormat32bppPBGRA,
+            WICBitmapCacheOnDemand,
+        )?;
+        let rt = factory.CreateWicBitmapRenderTarget(&wic, &software_rt_props())?;
+        rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+
+        // Reuse mem_dc across rebuilds; recreate only if it was lost.
+        if self.mem_dc.is_invalid() {
+            let screen_dc = GetWindowDC(None);
+            if screen_dc.is_invalid() {
+                return Err(Error::from_win32());
+            }
+            let mem_dc = CreateCompatibleDC(screen_dc);
+            let _ = ReleaseDC(None, screen_dc);
+            if mem_dc.is_invalid() {
+                return Err(Error::from_win32());
+            }
+            self.mem_dc = mem_dc;
+        }
+
+        let mut bmi = BITMAPINFO::default();
+        bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+        bmi.bmiHeader.biWidth = self.w;
+        bmi.bmiHeader.biHeight = -self.h;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB.0;
+
+        let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
+        let hbmp = CreateDIBSection(self.mem_dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)?;
+        if hbmp.is_invalid() {
+            return Err(Error::from_win32());
+        }
+        self.old_bmp = SelectObject(self.mem_dc, hbmp);
+
+        // Rebuild every brush against the new render target (same palette as new()).
+        self.bg_brush = rt.CreateSolidColorBrush(&color(0.125, 0.125, 0.125, 1.0), None)?;
+        self.border_brush = rt.CreateSolidColorBrush(&color(0.245, 0.245, 0.245, 1.0), None)?;
+        self.white_brush = rt.CreateSolidColorBrush(&color(0.96, 0.96, 0.98, 1.0), None)?;
+        self.dim_brush = rt.CreateSolidColorBrush(&color(0.62, 0.62, 0.67, 1.0), None)?;
+        self.subtle_brush = rt.CreateSolidColorBrush(&color(0.65, 0.65, 0.65, 1.0), None)?;
+        self.wicket_bg = rt.CreateSolidColorBrush(&color(0.600, 0.106, 0.106, 0.35), None)?;
+        self.wicket_text = rt.CreateSolidColorBrush(&color(0.973, 0.294, 0.333, 1.0), None)?;
+        self.redcard_bg = rt.CreateSolidColorBrush(&color(0.851, 0.016, 0.161, 0.40), None)?;
+        self.redcard_text = rt.CreateSolidColorBrush(&color(1.0, 0.42, 0.454, 1.0), None)?;
+        self.four_bg = rt.CreateSolidColorBrush(&color(0.012, 0.412, 0.631, 0.35), None)?;
+        self.four_text = rt.CreateSolidColorBrush(&color(0.220, 0.741, 0.973, 1.0), None)?;
+        self.six_bg = rt.CreateSolidColorBrush(&color(0.082, 0.502, 0.239, 0.35), None)?;
+        self.six_text = rt.CreateSolidColorBrush(&color(0.133, 0.773, 0.369, 1.0), None)?;
+        self.goal_bg = rt.CreateSolidColorBrush(&color(0.706, 0.325, 0.035, 0.35), None)?;
+        self.goal_text = rt.CreateSolidColorBrush(&color(0.961, 0.620, 0.043, 1.0), None)?;
+        self.win_bg = rt.CreateSolidColorBrush(&color(0.450, 0.150, 0.750, 0.35), None)?;
+        self.win_text = rt.CreateSolidColorBrush(&color(0.750, 0.450, 0.980, 1.0), None)?;
+
+        self.wic = wic;
+        self.rt = rt;
+        self.hbmp = hbmp;
+        self.bits = bits;
+        // Force the persistent buffer back to the rebuilt footprint on next present.
+        self.buf.clear();
+
+        Ok(())
+    }
+
+    pub fn last_event(&self) -> Option<MatchEvent> {
+        self.last_event.clone()
     }
 
     fn event_badge<'a>(
@@ -318,31 +453,32 @@ impl PopupRenderer {
         &'a ID2D1SolidColorBrush,
         &'a ID2D1SolidColorBrush,
     ) {
-        let upper_title = event.title.to_uppercase();
-        if upper_title.contains("RED CARD") {
-            ("🟥 CARD", &self.redcard_bg, &self.redcard_text)
-        } else if upper_title.contains("GOAL") {
-            ("⚽ GOAL", &self.goal_bg, &self.goal_text)
-        } else if upper_title.contains("FOUR") {
-            ("⚡ FOUR", &self.four_bg, &self.four_text)
-        } else if upper_title.contains("SIX") {
-            ("💥 SIX", &self.six_bg, &self.six_text)
-        } else if event.event_type == MatchEventType::Wicket
-            || upper_title.contains("WICKET")
-            || upper_title.contains("OUT")
-        {
-            ("🏏 WICKET", &self.wicket_bg, &self.wicket_text)
-        } else if event.event_type == MatchEventType::Win
-            || upper_title.contains("WON")
-            || upper_title.contains("WIN")
-        {
-            ("🏆 RESULT", &self.win_bg, &self.win_text)
-        } else {
-            ("EVENT", &self.six_bg, &self.six_text)
+        // Uppercase once; event_type decides first, title words refine with
+        // word boundaries (never naive OUT/WIN substrings: SHOUT/WING).
+        let upper = event.title.to_uppercase();
+        match event.event_type {
+            MatchEventType::Win => ("🏆 RESULT", &self.win_bg, &self.win_text),
+            MatchEventType::Wicket => {
+                if has_word(&upper, "RED") && has_word(&upper, "CARD") {
+                    ("🟥 CARD", &self.redcard_bg, &self.redcard_text)
+                } else {
+                    ("🏏 WICKET", &self.wicket_bg, &self.wicket_text)
+                }
+            }
+            MatchEventType::Boundary => {
+                if has_word(&upper, "GOAL") {
+                    ("⚽ GOAL", &self.goal_bg, &self.goal_text)
+                } else if has_word(&upper, "SIX") {
+                    ("💥 SIX", &self.six_bg, &self.six_text)
+                } else {
+                    ("⚡ FOUR", &self.four_bg, &self.four_text)
+                }
+            }
         }
     }
 
-    pub unsafe fn present(&self, pos: &POINT, event: &MatchEvent) -> Result<()> {
+    pub unsafe fn present(&mut self, pos: &POINT, event: &MatchEvent) -> Result<()> {
+        self.last_event = Some(event.clone());
         let (w, h) = (self.w as f32, self.h as f32);
         self.rt.BeginDraw();
         self.rt.Clear(None);
@@ -359,8 +495,10 @@ impl PopupRenderer {
             radiusY: 10.0,
         };
         self.rt.FillRoundedRectangle(&rr, &self.bg_brush);
+        // HC: bg is already opaque; bump the border to 2px.
+        let border_w = if high_contrast() { 2.0 } else { 1.0 };
         self.rt
-            .DrawRoundedRectangle(&rr, &self.border_brush, 1.0, None);
+            .DrawRoundedRectangle(&rr, &self.border_brush, border_w, None);
 
         let (badge_label, badge_bg, badge_text) = self.event_badge(event);
 
@@ -377,7 +515,10 @@ impl PopupRenderer {
             radiusY: 4.0,
         };
         self.rt.FillRoundedRectangle(&badge_rr, badge_bg);
-        self.fmt_badge
+        // Badge labels carry emoji (🏆/🟥/🏏/⚽/💥/⚡): must use the Emoji
+        // family, never Segoe UI (tofu). ASCII fallback in Segoe UI Emoji
+        // keeps the trailing label legible.
+        self.fmt_emoji
             .text(&self.rt, badge_label, &badge_rect, badge_text);
 
         let score_rect = D2D_RECT_F {
@@ -386,8 +527,12 @@ impl PopupRenderer {
             right: w - 12.0,
             bottom: 28.0,
         };
-        self.fmt_score
-            .text(&self.rt, &event.score, &score_rect, &self.white_brush);
+        self.fmt_score.text(
+            &self.rt,
+            &ui_text(&event.score, 24),
+            &score_rect,
+            &self.white_brush,
+        );
 
         // Middle Row: Event Headline
         let title_rect = D2D_RECT_F {
@@ -396,8 +541,12 @@ impl PopupRenderer {
             right: w - 12.0,
             bottom: 53.0,
         };
-        self.fmt_title
-            .text(&self.rt, &event.title, &title_rect, &self.white_brush);
+        self.fmt_title.text(
+            &self.rt,
+            &ui_text(&event.title, 48),
+            &title_rect,
+            &self.white_brush,
+        );
 
         // Bottom Row: Description / Subtext
         let desc_rect = D2D_RECT_F {
@@ -407,17 +556,26 @@ impl PopupRenderer {
             bottom: 74.0,
         };
         let clean_desc = clean_event_detail(&event.description, event.event_type);
-        self.fmt_desc
-            .text(&self.rt, &clean_desc, &desc_rect, &self.dim_brush);
+        self.fmt_desc.text(
+            &self.rt,
+            &ui_text(&clean_desc, 80),
+            &desc_rect,
+            &self.dim_brush,
+        );
 
         self.rt.EndDraw(None, None)?;
 
         let row_pitch = (self.w * 4) as usize;
         let total_bytes = row_pitch * self.h as usize;
-        let mut buf = vec![0u8; total_bytes];
+        // Persistent buffer: clear + resize instead of a per-present alloc.
+        // CopyPixels fully overwrites it; a stride mismatch surfaces as Err below.
+        debug_assert_eq!(row_pitch, self.w as usize * 4);
+        self.buf.clear();
+        self.buf.resize(total_bytes, 0);
         self.wic
-            .CopyPixels(std::ptr::null(), row_pitch as u32, &mut buf)?;
-        std::ptr::copy_nonoverlapping(buf.as_ptr(), self.bits as *mut u8, total_bytes);
+            .CopyPixels(std::ptr::null(), row_pitch as u32, &mut self.buf)?;
+        debug_assert_eq!(self.buf.len(), total_bytes);
+        std::ptr::copy_nonoverlapping(self.buf.as_ptr(), self.bits as *mut u8, self.buf.len());
 
         let size = SIZE {
             cx: self.w,
@@ -448,6 +606,10 @@ impl PopupRenderer {
 impl Drop for PopupRenderer {
     fn drop(&mut self) {
         unsafe {
+            // Restore the previously selected bitmap before deleting ours.
+            if !self.mem_dc.is_invalid() {
+                let _ = SelectObject(self.mem_dc, self.old_bmp);
+            }
             if !self.hbmp.is_invalid() {
                 let _ = DeleteObject(self.hbmp);
             }
@@ -471,6 +633,32 @@ unsafe extern "system" fn popup_wnd_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
+        WM_PAINT => {
+            // Layered windows must not rely on WM_PAINT for ULW, but RDP/UAC
+            // can blank the surface — re-present the last event if we have one.
+            let renderer_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut PopupRenderer;
+            let mut ps = PAINTSTRUCT::default();
+            let _ = BeginPaint(hwnd, &mut ps);
+            if let Some(renderer) = renderer_ptr.as_mut() {
+                if let Some(event) = renderer.last_event() {
+                    let mut rect = RECT::default();
+                    let _ = GetWindowRect(hwnd, &mut rect);
+                    let pos = POINT {
+                        x: rect.left,
+                        y: rect.top,
+                    };
+                    if let Err(e) = renderer.present(&pos, &event) {
+                        // P0-7: EndDraw RECREATE_TARGET → recreate + retry once,
+                        // same policy as the overlay/dashboard paths in main.rs.
+                        if e.code() == D2DERR_RECREATE_TARGET && renderer.recreate().is_ok() {
+                            let _ = renderer.present(&pos, &event);
+                        }
+                    }
+                }
+            }
+            let _ = EndPaint(hwnd, &ps);
+            LRESULT(0)
+        }
         WM_TIMER => {
             if wparam.0 == TIMER_AUTOHIDE_ID {
                 let _ = KillTimer(hwnd, TIMER_AUTOHIDE_ID);
@@ -482,6 +670,18 @@ unsafe extern "system" fn popup_wnd_proc(
             // Click to dismiss
             let _ = KillTimer(hwnd, TIMER_AUTOHIDE_ID);
             let _ = ShowWindow(hwnd, SW_HIDE);
+            LRESULT(0)
+        }
+        WM_KEYDOWN => {
+            // Esc dismisses when the popup has focus. Note: the popup is
+            // intentionally WS_EX_NOACTIVATE (non-focusable by design, no tab
+            // stops) so this is a backstop — click and the auto-hide timer are
+            // the primary dismiss paths. Screen-reader users get the same
+            // event via the overlay flash + tray tooltip.
+            if wparam.0 == VK_ESCAPE.0 as usize {
+                let _ = KillTimer(hwnd, TIMER_AUTOHIDE_ID);
+                let _ = ShowWindow(hwnd, SW_HIDE);
+            }
             LRESULT(0)
         }
         WM_CLOSE => {
@@ -499,7 +699,9 @@ unsafe extern "system" fn popup_wnd_proc(
 
 impl MiniPopupWindow {
     pub unsafe fn create() -> Result<Self> {
-        let hinstance = GetModuleHandleW(None).unwrap();
+        // P0-9: never panic on GUI startup paths; propagate so main can
+        // show MessageBoxW + ExitProcess(1).
+        let hinstance = GetModuleHandleW(None)?;
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
             style: CS_HREDRAW | CS_VREDRAW,
@@ -526,7 +728,10 @@ impl MiniPopupWindow {
             None,
         )?;
 
-        let renderer = Box::new(PopupRenderer::new(hwnd, POPUP_W, POPUP_H)?);
+        let mut renderer = Box::new(PopupRenderer::new(hwnd, POPUP_W, POPUP_H)?);
+        // Expose the renderer to popup_wnd_proc for WM_PAINT re-present.
+        // The Box is heap-stable; the pointer stays valid for the window lifetime.
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, renderer.as_mut() as *mut _ as isize);
 
         Ok(Self {
             hwnd,
@@ -536,7 +741,13 @@ impl MiniPopupWindow {
     }
 
     pub unsafe fn show_event(&mut self, event: MatchEvent, pos: POINT) {
-        let _ = self.renderer.present(&pos, &event);
+        if let Err(e) = self.renderer.present(&pos, &event) {
+            // P0-7: EndDraw RECREATE_TARGET (device lost) must recreate +
+            // retry once, never be swallowed. Other errors stay best-effort.
+            if e.code() == D2DERR_RECREATE_TARGET && self.renderer.recreate().is_ok() {
+                let _ = self.renderer.present(&pos, &event);
+            }
+        }
         let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
         let _ = SetWindowPos(
             self.hwnd,
@@ -548,9 +759,9 @@ impl MiniPopupWindow {
             SWP_NOSIZE | SWP_NOACTIVATE,
         );
         let timeout_ms: u32 = if event.event_type == MatchEventType::Win {
-            8000
+            WIN_TTL.as_millis() as u32
         } else {
-            5000
+            EVENT_TTL.as_millis() as u32
         };
         let _ = SetTimer(self.hwnd, TIMER_AUTOHIDE_ID, timeout_ms, None);
         self.current_event = Some(event);
