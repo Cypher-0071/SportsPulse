@@ -73,11 +73,12 @@ pub fn color(r: f32, g: f32, b: f32, a: f32) -> D2D1_COLOR_F {
     D2D1_COLOR_F { r, g, b, a }
 }
 
-/// Global UI scale: the whole interface (windows, cards, fonts, popups)
-/// renders at 70% of the design size. Applied at the DPI choke points —
-/// window pixel sizes (via `scale_for_dpi` in main.rs) and the Direct2D
-/// render-target DPI — so every surface shrinks uniformly without touching
-/// individual layout constants. Pixel insets against screen edges stay 1:1.
+/// Global UI scale for the dashboard only (renders at 70% of design size).
+/// Applied at the dashboard's DPI choke points — window pixel sizes (via
+/// `scale_dash_for_dpi` in main.rs) and the dashboard render-target DPI.
+/// The scoreboard overlay and event popups render full-size 1:1, so their
+/// layout constants and render-target DPI stay truthful. Pixel insets
+/// against screen edges stay 1:1 everywhere.
 pub const UI_SCALE: f32 = 0.7;
 
 /// ESPN-fed string guard: pre-truncate with … (all formats are NO_WRAP +
@@ -747,7 +748,7 @@ impl Renderer {
 
     pub fn set_dpi(&mut self, dpi: u32) {
         self.dpi = dpi;
-        let d = (if dpi == 0 { 96.0 } else { dpi as f32 }) * UI_SCALE;
+        let d = if dpi == 0 { 96.0 } else { dpi as f32 };
         unsafe {
             self.rt.SetDpi(d, d);
         }
@@ -778,7 +779,7 @@ impl Renderer {
 
         let rt = factory.CreateWicBitmapRenderTarget(&wic, &software_rt_props())?;
         rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-        let d = (if self.dpi == 0 { 96.0 } else { self.dpi as f32 }) * UI_SCALE;
+        let d = if self.dpi == 0 { 96.0 } else { self.dpi as f32 };
         rt.SetDpi(d, d);
 
         // Reuse mem_dc across resizes; recreate only if it was lost.

@@ -261,8 +261,16 @@ unsafe fn work_area_for(hwnd: HWND) -> RECT {
 
 #[cfg(windows)]
 fn scale_for_dpi(px: u32, dpi: u32) -> u32 {
-    // P1-1: MulDiv(px, dpi, 96) with rounding, then the global UI_SCALE
-    // (whole UI renders at 70%). dpi 0 (GetDpiForWindow failure) falls back to 96.
+    // P1-1: MulDiv(px, dpi, 96) with rounding. dpi 0 (GetDpiForWindow failure) falls back to 96.
+    // Truthful 1:1 scaling — used for the scoreboard overlay, event popups
+    // (via POPUP_W/H), and the tray icon, which all render full-size.
+    let dpi = if dpi == 0 { 96 } else { dpi };
+    (((px as u64 * dpi as u64) + 48) / 96).max(1) as u32
+}
+
+/// Dashboard-only variant carrying the global UI_SCALE (dashboard renders
+/// at 70% of design size; overlay and popups stay full-size).
+fn scale_dash_for_dpi(px: u32, dpi: u32) -> u32 {
     let dpi = if dpi == 0 { 96 } else { dpi };
     ((px as f32 * dpi as f32 / 96.0 * UI_SCALE).round() as u32).max(1)
 }
@@ -459,8 +467,8 @@ unsafe fn toggle_dashboard_maximize(state: &mut AppState) {
         r.is_maximized = true;
         let _ = SetWindowPos(hwnd, None, wa.left, wa.top, width, height, SWP_NOACTIVATE);
     } else {
-        let min_w = scale_for_dpi(DASH_NORMAL_W, state.dpi) as i32;
-        let min_h = scale_for_dpi(DASH_NORMAL_H, state.dpi) as i32;
+        let min_w = scale_dash_for_dpi(DASH_NORMAL_W, state.dpi) as i32;
+        let min_h = scale_dash_for_dpi(DASH_NORMAL_H, state.dpi) as i32;
         let width = (restore_rect.right - restore_rect.left).max(min_w);
         let height = (restore_rect.bottom - restore_rect.top).max(min_h);
         r.is_maximized = false;
@@ -566,8 +574,8 @@ unsafe fn restore_dashboard_for_drag(state: &mut AppState, grab_x: f32, grab_y: 
     let mut maximized = RECT::default();
     let _ = GetWindowRect(hwnd, &mut maximized);
     let max_width = (maximized.right - maximized.left).max(1) as f32;
-    let min_w = scale_for_dpi(DASH_NORMAL_W, state.dpi) as i32;
-    let min_h = scale_for_dpi(DASH_NORMAL_H, state.dpi) as i32;
+    let min_w = scale_dash_for_dpi(DASH_NORMAL_W, state.dpi) as i32;
+    let min_h = scale_dash_for_dpi(DASH_NORMAL_H, state.dpi) as i32;
     let normal_width = (restore.right - restore.left).max(min_w);
     let normal_height = (restore.bottom - restore.top).max(min_h);
     let pointer_ratio = (grab_x / max_width).clamp(0.12, 0.88);
@@ -1717,8 +1725,8 @@ fn main() {
         // 4. Create Dashboard Window scaled for monitor DPI
         let max_dash_w = ((primary_wa.right - primary_wa.left) - 64).max(640) as u32;
         let max_dash_h = ((primary_wa.bottom - primary_wa.top) - 64).max(480) as u32;
-        let init_dash_w = scale_for_dpi(DASH_NORMAL_W, dpi).min(max_dash_w);
-        let init_dash_h = scale_for_dpi(DASH_NORMAL_H, dpi).min(max_dash_h);
+        let init_dash_w = scale_dash_for_dpi(DASH_NORMAL_W, dpi).min(max_dash_w);
+        let init_dash_h = scale_dash_for_dpi(DASH_NORMAL_H, dpi).min(max_dash_h);
         let dash_pos = center_screen_point(hwnd, init_dash_w, init_dash_h);
         let dash_hwnd = match CreateWindowExW(
             // The discovery dashboard is a normal taskbar application while open.
