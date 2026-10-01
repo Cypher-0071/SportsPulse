@@ -18,8 +18,7 @@ use windows::Win32::Graphics::Direct2D::{
 };
 use windows::Win32::Graphics::DirectWrite::{
     IDWriteTextFormat, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
-    DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_FONT_WEIGHT_NORMAL,
-    DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+    DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
     DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
     DWRITE_WORD_WRAPPING_NO_WRAP,
 };
@@ -54,7 +53,7 @@ fn create_logo_bitmap(
         let stream = wicf.CreateStream().ok()?;
         stream.InitializeFromMemory(ICON_128_PNG).ok()?;
         let decoder = wicf
-            .CreateDecoderFromStream(&stream, None, WICDecodeMetadataCacheOnDemand)
+            .CreateDecoderFromStream(&stream, std::ptr::null(), WICDecodeMetadataCacheOnDemand)
             .ok()?;
         let frame = decoder.GetFrame(0).ok()?;
         let converter = wicf.CreateFormatConverter().ok()?;
@@ -651,7 +650,7 @@ impl DashboardRenderer {
     }
 
     fn sport_switcher_rects(&self) -> (D2D_RECT_F, D2D_RECT_F, D2D_RECT_F) {
-        let size = self.rt.GetSize();
+        let size = unsafe { self.rt.GetSize() };
         let w = size.width;
         let (_, container_right) = Self::container_bounds(w);
         let cy = TITLE_BAR_HEIGHT + PAGE_HEADER_HEIGHT / 2.0;
@@ -720,7 +719,7 @@ impl DashboardRenderer {
         let scale = if self.dpi == 0 { 1.0 } else { self.dpi as f32 / 96.0 };
         let x = x_px / scale;
         let y = y_px / scale;
-        let size = self.rt.GetSize();
+        let size = unsafe { self.rt.GetSize() };
         let w = size.width;
 
         if (0.0..=TITLE_BAR_HEIGHT).contains(&y) {
@@ -777,7 +776,7 @@ impl DashboardRenderer {
         selected_id: &Option<String>,
         loading: bool,
     ) -> Result<()> {
-        let size = self.rt.GetSize();
+        let size = unsafe { self.rt.GetSize() };
         let (w, h) = (size.width, size.height);
         self.scroll_offset = self.scroll_offset.clamp(0.0, self.max_scroll());
         self.card_layout.clear();
@@ -1551,7 +1550,7 @@ impl DashboardRenderer {
     }
 
     pub fn max_scroll(&self) -> f32 {
-        let size = self.rt.GetSize();
+        let size = unsafe { self.rt.GetSize() };
         let viewport = (size.height - Self::page_content_top() - CONTENT_BOTTOM_GUTTER).max(1.0);
         (self.content_height - viewport).max(0.0)
     }
