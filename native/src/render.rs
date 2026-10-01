@@ -73,6 +73,13 @@ pub fn color(r: f32, g: f32, b: f32, a: f32) -> D2D1_COLOR_F {
     D2D1_COLOR_F { r, g, b, a }
 }
 
+/// Global UI scale: the whole interface (windows, cards, fonts, popups)
+/// renders at 70% of the design size. Applied at the DPI choke points —
+/// window pixel sizes (via `scale_for_dpi` in main.rs) and the Direct2D
+/// render-target DPI — so every surface shrinks uniformly without touching
+/// individual layout constants. Pixel insets against screen edges stay 1:1.
+pub const UI_SCALE: f32 = 0.7;
+
 /// ESPN-fed string guard: pre-truncate with … (all formats are NO_WRAP +
 /// CLIP) and wrap in U+2066..U+2069 isolates so mixed-script team/event names
 /// never reorder surrounding UI text. Apply at every DrawText site fed by
@@ -740,7 +747,7 @@ impl Renderer {
 
     pub fn set_dpi(&mut self, dpi: u32) {
         self.dpi = dpi;
-        let d = if dpi == 0 { 96.0 } else { dpi as f32 };
+        let d = (if dpi == 0 { 96.0 } else { dpi as f32 }) * UI_SCALE;
         unsafe {
             self.rt.SetDpi(d, d);
         }
@@ -771,7 +778,7 @@ impl Renderer {
 
         let rt = factory.CreateWicBitmapRenderTarget(&wic, &software_rt_props())?;
         rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-        let d = if self.dpi == 0 { 96.0 } else { self.dpi as f32 };
+        let d = (if self.dpi == 0 { 96.0 } else { self.dpi as f32 }) * UI_SCALE;
         rt.SetDpi(d, d);
 
         // Reuse mem_dc across resizes; recreate only if it was lost.
