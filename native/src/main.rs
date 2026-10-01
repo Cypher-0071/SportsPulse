@@ -170,9 +170,10 @@ const HOTKEY_ID_FALLBACK: i32 = 2;
 const DASH_LOADER_TIMER: usize = 1;
 #[cfg(windows)]
 const OVERLAY_FLASH_TIMER: usize = 2;
-/// Spinner tick slowed from 33ms: a full 1120x760 present per tick is ~3.4MB + D2D + ULW.
+/// Loader repaint cadence: 20fps keeps the spinner arc smooth (~11°/frame at
+/// 0.6 rev/s) while bounding the cost of a full-window present per tick.
 #[cfg(windows)]
-const DASH_LOADER_MS: u32 = 120;
+const DASH_LOADER_MS: u32 = 50;
 /// One-shot retry timers for bridge posts that hit a full message queue.
 #[cfg(windows)]
 const POST_RETRY_SCORE_TIMER: usize = 3;
@@ -212,6 +213,9 @@ struct AppState {
     dpi: u32,
     /// Pending drag on maximized dashboard title bar: (grab_x, grab_y, start_cursor).
     title_drag_pending: Option<(f32, f32, POINT)>,
+    /// Active scrollbar thumb-drag: cursor grab offset below the thumb top, in
+    /// design DIPs. While set, mouse moves drive scroll_offset directly.
+    scrollbar_drag: Option<f32>,
 }
 
 /// P0-9: GUI startup must never panic. Show a message box and terminate with
@@ -534,6 +538,39 @@ unsafe fn post_ui_msg(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) {
         };
         let _ = SetTimer(hwnd, retry_timer, POST_RETRY_DELAY_MS, None);
     }
+}
+
+/// Drive dashboard scroll from a scrollbar thumb-drag. `y_dip` is the cursor
+/// in design DIPs; `state.scrollbar_drag` holds the grab offset below the
+/// thumb top (thumb height / 2 after a track-click jump). Maps the thumb
+/// travel linearly onto 0..=max_scroll, snaps both scroll fields (no
+/// animation fighting), and re-presents. No-op when no scrollbar is painted.
+#[cfg(windows)]
+unsafe fn apply_scrollbar_drag(state: &mut AppState, hwnd: HWND, y_dip: f32) {
+    let (track, thumb, max_sc) = match state.dash_renderer.as_ref().and_then(|r| {
+        Some((
+            r.scrollbar_track?,
+            r.scrollbar_thumb?,
+            r.max_scroll(),
+        ))
+    }) {
+        Some(v) => v,
+        None => return,
+    };
+    if max_sc <= 0.0 {
+        return;
+    }
+    let thumb_h = (thumb.bottom - thumb.top).max(1.0);
+    let grab = state.scrollbar_drag.unwrap_or(thumb_h / 2.0);
+    let span = (track.bottom - track.top - thumb_h).max(1.0);
+    let scroll = ((y_dip - grab - track.top) / span * max_sc).clamp(0.0, max_sc);
+    if let Some(r) = state.dash_renderer.as_mut() {
+        r.scroll_offset = scroll;
+        r.target_scroll_offset = scroll;
+        r.wheel_accum = 0.0;
+    }
+    let _ = KillTimer(hwnd, DASH_SCROLL_TIMER);
+    present_dashboard_hwnd(state, hwnd);
 }
 
 #[cfg(windows)]
@@ -1105,6 +1142,32 @@ unsafe extern "system" fn dashboard_wnd_proc(
                     .dash_renderer
                     .as_ref()
                     .and_then(|r| r.hit_test(x, y, state.dash_matches.len()));
+                // Scrollbar grabs before everything: thumb-drag starts here, and
+                // a track-click first jumps the thumb under the cursor, then drags.
+                if matches!(hit, Some(HitTarget::Scrollbar)) {
+                    let scale = state
+                        .dash_renderer
+                        .as_ref()
+                        .map(|r| r.dip_scale())
+                        .unwrap_or(1.0);
+                    let y_dip = y / scale;
+                    let grab = state
+                        .dash_renderer
+                        .as_ref()
+                        .and_then(|r| r.scrollbar_thumb)
+                        .map(|t| {
+                            if y_dip >= t.top && y_dip <= t.bottom {
+                                y_dip - t.top
+                            } else {
+                                (t.bottom - t.top) / 2.0
+                            }
+                        })
+                        .unwrap_or(20.0);
+                    state.scrollbar_drag = Some(grab);
+                    let _ = SetCapture(hwnd);
+                    apply_scrollbar_drag(state, hwnd, y_dip);
+                    return LRESULT(0);
+                }
                 if matches!(hit, Some(HitTarget::CricketTab))
                     || matches!(hit, Some(HitTarget::FootballTab))
                 {
@@ -1156,6 +1219,17 @@ unsafe extern "system" fn dashboard_wnd_proc(
         }
         WM_MOUSEMOVE => {
             if let Some(state) = state_ptr.as_mut() {
+                // Active thumb-drag bypasses hover: cursor position drives scroll.
+                if state.scrollbar_drag.is_some() {
+                    let y = (lparam.0 >> 16) as i16 as f32;
+                    let scale = state
+                        .dash_renderer
+                        .as_ref()
+                        .map(|r| r.dip_scale())
+                        .unwrap_or(1.0);
+                    apply_scrollbar_drag(state, hwnd, y / scale);
+                    return LRESULT(0);
+                }
                 if let Some((grab_x, grab_y, start_cur)) = state.title_drag_pending {
                     let mut cur = POINT::default();
                     if GetCursorPos(&mut cur).is_ok()
@@ -1431,6 +1505,12 @@ unsafe extern "system" fn dashboard_wnd_proc(
             let y = (lparam.0 >> 16) as i16 as f32;
 
             if let Some(state) = state_ptr.as_mut() {
+                // Ending a thumb-drag swallows the click (no button activation).
+                if state.scrollbar_drag.is_some() {
+                    state.scrollbar_drag = None;
+                    let _ = ReleaseCapture();
+                    return LRESULT(0);
+                }
                 if state.title_drag_pending.is_some() {
                     state.title_drag_pending = None;
                     let _ = ReleaseCapture();
@@ -1785,6 +1865,7 @@ fn main() {
             },
             dpi,
             title_drag_pending: None,
+            scrollbar_drag: None,
         });
 
         // P0-6: single Box owner shared via raw ptr. Both windows point at the

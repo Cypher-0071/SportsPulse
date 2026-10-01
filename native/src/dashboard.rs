@@ -90,9 +90,9 @@ const ACTION_W: f32 = 108.0;
 const ACTION_H: f32 = 32.0;
 const CONTENT_BOTTOM_GUTTER: f32 = 24.0;
 const SCROLL_STEP: f32 = 72.0; // pixels per wheel notch
-const SWITCHER_W: f32 = 232.0;
-const SWITCHER_H: f32 = 36.0;
-const EMPTY_CARD_H: f32 = 84.0;
+const SWITCHER_W: f32 = 278.0;
+const SWITCHER_H: f32 = 43.0;
+const EMPTY_CARD_H: f32 = 116.0;
 const SPINNER_RADIUS: f32 = 16.0;
 
 fn get_work_area_size(hwnd: HWND) -> (i32, i32) {
@@ -158,6 +158,7 @@ pub enum HitTarget {
     CricketTab,
     FootballTab,
     TitleBar,
+    Scrollbar,
     MatchItem(usize),
     MatchAction(usize),
 }
@@ -368,6 +369,10 @@ pub struct DashboardRenderer {
     content_height: f32,
     /// (global match index, card rect, exact 44px action-button rect).
     card_layout: Vec<(usize, D2D_RECT_F, D2D_RECT_F)>,
+    /// Last-painted scrollbar geometry in design DIPs (None when content fits).
+    /// Hit-testing and thumb-dragging read these; refreshed every present().
+    pub scrollbar_track: Option<D2D_RECT_F>,
+    pub scrollbar_thumb: Option<D2D_RECT_F>,
     spinner_origin: Instant,
     // Persistent pixel scratch buffer: avoids a ~3.4MB alloc + double copy per present.
     buf: Vec<u8>,
@@ -487,13 +492,13 @@ impl DashboardRenderer {
             )?,
             fmt_badge: mk_font(13.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
             fmt_action: mk_font(13.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
-            fmt_tab: mk_font(13.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
+            fmt_tab: mk_font(15.6, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
             fmt_icon: Fmt {
                 fmt: fmt_icon_fmt,
                 buf: RefCell::new(Vec::new()),
             },
             fmt_empty: mk_font(
-                16.0,
+                20.0,
                 DWRITE_FONT_WEIGHT_NORMAL,
                 DWRITE_TEXT_ALIGNMENT_CENTER,
             )?,
@@ -520,6 +525,8 @@ impl DashboardRenderer {
             active_sport: DashboardSport::Cricket,
             content_height: 0.0,
             card_layout: Vec::new(),
+            scrollbar_track: None,
+            scrollbar_thumb: None,
             spinner_origin: Instant::now(),
             buf: Vec::new(),
             group_cache: None,
@@ -694,9 +701,11 @@ impl DashboardRenderer {
         }
 
         let t = self.spinner_origin.elapsed().as_secs_f32();
-        let start = t * std::f32::consts::TAU * 0.95;
+        // Gentle 0.6 rev/s: at the 50ms loader tick the arc advances ~11° per
+        // frame instead of jumping ~43°, which reads as smooth rather than janky.
+        let start = t * std::f32::consts::TAU * 0.6;
         let sweep = 1.85_f32;
-        let steps = 20;
+        let steps = 28;
         for i in 0..steps {
             let a0 = start + sweep * (i as f32 / steps as f32);
             let a1 = start + sweep * ((i + 1) as f32 / steps as f32);
@@ -716,14 +725,22 @@ impl DashboardRenderer {
         }
     }
 
-    pub fn hit_test(&self, x_px: f32, y_px: f32, _match_count: usize) -> Option<HitTarget> {
-        // Mouse arrives in physical pixels; the render target works in design
-        // DIPs (RT DPI = monitor DPI × UI_SCALE), so divide by both.
-        let scale = if self.dpi == 0 {
+    /// Pixels → design-DIP divisor. The render target runs at
+    /// monitor-DPI × UI_SCALE, so physical mouse pixels must be divided by
+    /// (dpi/96 × UI_SCALE) to land in layout space. Single source of truth
+    /// shared by hit_test() and scrollbar-dragging.
+    pub fn dip_scale(&self) -> f32 {
+        if self.dpi == 0 {
             UI_SCALE
         } else {
             self.dpi as f32 / 96.0 * UI_SCALE
-        };
+        }
+    }
+
+    pub fn hit_test(&self, x_px: f32, y_px: f32, _match_count: usize) -> Option<HitTarget> {
+        // Mouse arrives in physical pixels; the render target works in design
+        // DIPs (RT DPI = monitor DPI × UI_SCALE), so divide by both.
+        let scale = self.dip_scale();
         let x = x_px / scale;
         let y = y_px / scale;
         let size = unsafe { self.rt.GetSize() };
@@ -759,6 +776,12 @@ impl DashboardRenderer {
 
         let content_top = Self::page_content_top();
         let content_bottom = size.height - CONTENT_BOTTOM_GUTTER;
+        // Scrollbar grabs before cards: the track sits clear of card columns.
+        if let Some(track) = self.scrollbar_track {
+            if x >= track.left && x <= track.right && y >= track.top && y <= track.bottom {
+                return Some(HitTarget::Scrollbar);
+            }
+        }
         if y >= content_top && y <= content_bottom {
             // Action buttons hit first on their exact rects; card bodies second.
             for (index, _card, action) in &self.card_layout {
@@ -1178,7 +1201,10 @@ impl DashboardRenderer {
 
             let gap = 14.0;
             let available_w = container_right - container_left;
-            let min_col_w = 380.0;
+            // Wide columns so 22pt titles (e.g. "Jammu & Kashmir v Rest of India")
+            // clear the TRACK button without clipping: 1 column at normal width,
+            // 3 across when maximized.
+            let min_col_w = 560.0;
             let num_cols = ((available_w + gap) / (min_col_w + gap)).floor().max(1.0) as usize;
             let col_w = (available_w - (num_cols - 1) as f32 * gap) / num_cols as f32;
             let content_top = Self::page_content_top();
@@ -1438,30 +1464,38 @@ impl DashboardRenderer {
                     (track_height * (viewport / self.content_height)).clamp(32.0, track_height);
                 let thumb_top = track_top
                     + (track_height - thumb_height) * (self.scroll_offset / max_sc.max(1.0));
+                // Stored for hit-testing + thumb-dragging (same rects as painted).
+                let track_rect = D2D_RECT_F {
+                    // 8px-wide scrollbar: minimum operable width.
+                    left: w - 18.0,
+                    top: track_top,
+                    right: w - 10.0,
+                    bottom: track_bottom,
+                };
+                let thumb_rect = D2D_RECT_F {
+                    left: w - 18.0,
+                    top: thumb_top,
+                    right: w - 10.0,
+                    bottom: thumb_top + thumb_height,
+                };
+                self.scrollbar_track = Some(track_rect);
+                self.scrollbar_thumb = Some(thumb_rect);
                 let track = D2D1_ROUNDED_RECT {
-                    rect: D2D_RECT_F {
-                        // 8px-wide scrollbar: minimum operable width.
-                        left: w - 18.0,
-                        top: track_top,
-                        right: w - 10.0,
-                        bottom: track_bottom,
-                    },
+                    rect: track_rect,
                     radiusX: 2.5,
                     radiusY: 2.5,
                 };
                 let thumb = D2D1_ROUNDED_RECT {
-                    rect: D2D_RECT_F {
-                        left: w - 18.0,
-                        top: thumb_top,
-                        right: w - 10.0,
-                        bottom: thumb_top + thumb_height,
-                    },
+                    rect: thumb_rect,
                     radiusX: 2.5,
                     radiusY: 2.5,
                 };
                 self.rt
                     .FillRoundedRectangle(&track, &self.brushes.icon_box_bg);
                 self.rt.FillRoundedRectangle(&thumb, &self.brushes.subtle);
+            } else {
+                self.scrollbar_track = None;
+                self.scrollbar_thumb = None;
             }
         }
 
