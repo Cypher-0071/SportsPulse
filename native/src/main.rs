@@ -115,7 +115,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_EXITSIZEMOVE,
     WM_GETMINMAXINFO, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
     WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_PAINT,
-    WM_SETICON, WM_SIZE, WM_TIMER, WNDCLASSEXW, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
+    WM_RBUTTONUP, WM_SETICON, WM_SIZE, WM_TIMER, WNDCLASSEXW, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
     WS_EX_TOPMOST, WS_POPUP,
 };
 
@@ -535,8 +535,9 @@ unsafe fn present_dashboard_hwnd(state: &mut AppState, hwnd: HWND) {
     let _ = GetWindowRect(hwnd, &mut rect);
     let w = (rect.right - rect.left).max(1) as u32;
     let h = (rect.bottom - rect.top).max(1) as u32;
+    let dpi = state.dpi;
     if let Some(r) = state.dash_renderer.as_mut() {
-        let _ = r.resize(w, h);
+        let _ = r.resize(w, h, dpi);
         debug_assert_eq!((r.w, r.h), (w as i32, h as i32));
     }
     present_dashboard(
