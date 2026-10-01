@@ -135,7 +135,7 @@ use sportspulse::engine::models::{MatchEventType, MatchScore, MatchStatus, Sport
 #[cfg(windows)]
 use sportspulse::popup::{MiniPopupWindow, POPUP_H, POPUP_W};
 #[cfg(windows)]
-use sportspulse::render::{reduced_motion, ui_text, Renderer, EVENT_TTL, WIN_TTL};
+use sportspulse::render::{reduced_motion, ui_text, Renderer, UI_SCALE, EVENT_TTL, WIN_TTL};
 #[cfg(windows)]
 use sportspulse::tray::{
     load_app_icon, TrayIcon, ID_TRAY_OPEN_DASHBOARD, ID_TRAY_QUIT, ID_TRAY_TOGGLE_SCORE,
@@ -261,9 +261,10 @@ unsafe fn work_area_for(hwnd: HWND) -> RECT {
 
 #[cfg(windows)]
 fn scale_for_dpi(px: u32, dpi: u32) -> u32 {
-    // P1-1: MulDiv(px, dpi, 96) with rounding. dpi 0 (GetDpiForWindow failure) falls back to 96.
+    // P1-1: MulDiv(px, dpi, 96) with rounding, then the global UI_SCALE
+    // (whole UI renders at 70%). dpi 0 (GetDpiForWindow failure) falls back to 96.
     let dpi = if dpi == 0 { 96 } else { dpi };
-    (((px as u64 * dpi as u64) + 48) / 96).max(1) as u32
+    ((px as f32 * dpi as f32 / 96.0 * UI_SCALE).round() as u32).max(1)
 }
 
 #[cfg(windows)]

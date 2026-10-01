@@ -40,6 +40,7 @@ use crate::engine::events::DiscoveredMatch;
 use crate::engine::models::SportType;
 use crate::render::{
     d2d_factory, dwrite_factory, high_contrast, reduced_motion, software_rt_props, ui_text,
+    UI_SCALE,
 };
 use chrono::{DateTime, FixedOffset};
 
@@ -388,7 +389,7 @@ impl DashboardRenderer {
 
         let rt = factory.CreateWicBitmapRenderTarget(&wic, &software_rt_props())?;
         rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-        let d = if dpi == 0 { 96.0 } else { dpi as f32 };
+        let d = (if dpi == 0 { 96.0 } else { dpi as f32 }) * UI_SCALE;
         rt.SetDpi(d, d);
 
         let screen_dc = GetWindowDC(None);
@@ -552,7 +553,7 @@ impl DashboardRenderer {
 
         let rt = factory.CreateWicBitmapRenderTarget(&wic, &software_rt_props())?;
         rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-        let d = if dpi == 0 { 96.0 } else { dpi as f32 };
+        let d = (if dpi == 0 { 96.0 } else { dpi as f32 }) * UI_SCALE;
         rt.SetDpi(d, d);
 
         // Reuse mem_dc across resizes; recreate only if it was lost.
@@ -716,7 +717,13 @@ impl DashboardRenderer {
     }
 
     pub fn hit_test(&self, x_px: f32, y_px: f32, _match_count: usize) -> Option<HitTarget> {
-        let scale = if self.dpi == 0 { 1.0 } else { self.dpi as f32 / 96.0 };
+        // Mouse arrives in physical pixels; the render target works in design
+        // DIPs (RT DPI = monitor DPI × UI_SCALE), so divide by both.
+        let scale = if self.dpi == 0 {
+            UI_SCALE
+        } else {
+            self.dpi as f32 / 96.0 * UI_SCALE
+        };
         let x = x_px / scale;
         let y = y_px / scale;
         let size = unsafe { self.rt.GetSize() };
