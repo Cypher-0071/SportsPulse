@@ -42,8 +42,10 @@ pub fn log_live_benchmark_sample(state_label: &str) {
     #[cfg(debug_assertions)]
     {
         unsafe {
-            let mut pmc = PROCESS_MEMORY_COUNTERS_EX::default();
-            pmc.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+            let mut pmc = PROCESS_MEMORY_COUNTERS_EX {
+                cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+                ..Default::default()
+            };
             let _ = GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc as *mut _ as *mut _, pmc.cb);
             use std::io::Write;
             if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -97,8 +99,8 @@ pub fn log_live_benchmark_sample(state_label: &str) {
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 #[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, ReleaseCapture, TrackMouseEvent, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT,
-    MOD_CONTROL, TME_LEAVE, TRACKMOUSEEVENT, VK_SPACE,
+    RegisterHotKey, ReleaseCapture, SetCapture, TrackMouseEvent, UnregisterHotKey,
+    HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, TME_LEAVE, TRACKMOUSEEVENT, VK_SPACE,
 };
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -106,13 +108,15 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowLongPtrW, GetWindowRect, IsIconic, IsWindowVisible, KillTimer, LoadCursorW,
     MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW, SendMessageW,
     SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-    SystemParametersInfoW, TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA,
-    HCURSOR, HMENU, HTCAPTION, IDC_ARROW, MB_ICONERROR, MB_OK, MINMAXINFO, MSG, SPI_GETWORKAREA,
-    SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_MINIMIZE, SW_RESTORE, SW_SHOW, SW_SHOWNOACTIVATE,
-    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WM_APP, WM_CLOSE, WM_COMMAND, WM_DESTROY,
-    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_GETMINMAXINFO, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_NCLBUTTONDOWN, WM_PAINT, WM_TIMER,
-    WNDCLASSEXW, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    SystemParametersInfoW, TranslateMessage, CREATESTRUCTW, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW,
+    GWLP_USERDATA, HCURSOR, HMENU, HTCAPTION, ICON_BIG, ICON_SMALL, IDC_ARROW, MB_ICONERROR, MB_OK,
+    MINMAXINFO, MSG, SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_MINIMIZE,
+    SW_RESTORE, SW_SHOW, SW_SHOWNOACTIVATE, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WM_APP, WM_CLOSE,
+    WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_EXITSIZEMOVE,
+    WM_GETMINMAXINFO, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_PAINT,
+    WM_SETICON, WM_SIZE, WM_TIMER, WNDCLASSEXW, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_POPUP,
 };
 
 #[cfg(windows)]
@@ -134,8 +138,8 @@ use sportspulse::popup::{MiniPopupWindow, POPUP_H, POPUP_W};
 use sportspulse::render::{reduced_motion, ui_text, Renderer, EVENT_TTL, WIN_TTL};
 #[cfg(windows)]
 use sportspulse::tray::{
-    TrayIcon, ID_TRAY_OPEN_DASHBOARD, ID_TRAY_QUIT, ID_TRAY_TOGGLE_SCORE, ID_TRAY_UNTRACK_MATCH,
-    TASKBAR_CREATED_MSG, WM_APP_TRAY,
+    load_app_icon, TrayIcon, ID_TRAY_OPEN_DASHBOARD, ID_TRAY_QUIT, ID_TRAY_TOGGLE_SCORE,
+    ID_TRAY_UNTRACK_MATCH, TASKBAR_CREATED_MSG, WM_APP_TRAY,
 };
 
 #[cfg(windows)]
@@ -148,13 +152,15 @@ pub const WM_APP_MATCHES_DISCOVERED: u32 = WM_APP + 4;
 #[cfg(windows)]
 const CLASS_NAME: PCWSTR = w!("SPNativeMain");
 #[cfg(windows)]
-const SCORE_W: u32 = 540;
+const SCORE_W: u32 = 340;
 #[cfg(windows)]
-const SCORE_H: u32 = 200;
+const SCORE_H: u32 = 110;
 #[cfg(windows)]
-const SCORE_SOCCER_H: u32 = 96;
+const SCORE_SOCCER_W: u32 = 340;
 #[cfg(windows)]
-const SCORE_CRICKET_COMPACT_H: u32 = 140;
+const SCORE_SOCCER_H: u32 = 40;
+#[cfg(windows)]
+const SCORE_CRICKET_COMPACT_H: u32 = 80;
 #[cfg(windows)]
 const HOTKEY_ID: i32 = 1;
 /// Fallback registration id when the primary hotkey id is taken.
@@ -176,6 +182,10 @@ const POST_RETRY_EVENT_TIMER: usize = 4;
 const POST_RETRY_DISCOVERED_TIMER: usize = 5;
 #[cfg(windows)]
 const POST_RETRY_UNTRACK_TIMER: usize = 6;
+#[cfg(windows)]
+const DASH_SCROLL_TIMER: usize = 7;
+#[cfg(windows)]
+const DASH_SCROLL_MS: u32 = 16;
 #[cfg(windows)]
 const POST_RETRY_DELAY_MS: u32 = 50;
 
@@ -200,6 +210,8 @@ struct AppState {
     dashboard_restore_rect: RECT,
     /// Real DPI from GetDpiForWindow (96 fallback); refreshed on WM_DPICHANGED.
     dpi: u32,
+    /// Pending drag on maximized dashboard title bar: (grab_x, grab_y, start_cursor).
+    title_drag_pending: Option<(f32, f32, POINT)>,
 }
 
 /// P0-9: GUI startup must never panic. Show a message box and terminate with
@@ -236,8 +248,10 @@ unsafe fn work_area() -> RECT {
 #[cfg(windows)]
 unsafe fn work_area_for(hwnd: HWND) -> RECT {
     let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-    let mut info = MONITORINFO::default();
-    info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
     if GetMonitorInfoW(monitor, &mut info).as_bool() {
         info.rcWork
     } else {
@@ -258,7 +272,7 @@ fn overlay_size_for(score: &Option<MatchScore>, dpi: u32) -> (u32, u32) {
     // suggested rect is not snapped back to 96-DPI px by the caller.
     let (base_w, base_h) = match score {
         Some(s) if s.status != MatchStatus::NoMatch => match s.sport {
-            SportType::Soccer => (SCORE_W, SCORE_SOCCER_H),
+            SportType::Soccer => (SCORE_SOCCER_W, SCORE_SOCCER_H),
             SportType::Cricket => match s.status {
                 MatchStatus::Live | MatchStatus::Break => (SCORE_W, SCORE_H),
                 _ => (SCORE_W, SCORE_CRICKET_COMPACT_H),
@@ -295,6 +309,7 @@ unsafe fn place_and_present_overlay(hwnd: HWND, state: &mut AppState, score: &Op
         h as i32,
         SWP_NOACTIVATE | SWP_NOZORDER,
     );
+    state.renderer.set_dpi(state.dpi);
     let _ = state.renderer.resize(w, h);
     debug_assert_eq!(state.renderer.size(), (w as i32, h as i32));
     if let Err(e) = state.renderer.present(&pos, score) {
@@ -317,6 +332,7 @@ unsafe fn present_overlay_now(hwnd: HWND, state: &mut AppState) {
     let _ = GetWindowRect(hwnd, &mut rect);
     let w = (rect.right - rect.left).max(1) as u32;
     let h = (rect.bottom - rect.top).max(1) as u32;
+    state.renderer.set_dpi(state.dpi);
     let _ = state.renderer.resize(w, h);
     debug_assert_eq!(state.renderer.size(), (w as i32, h as i32));
     let pos = POINT {
@@ -350,7 +366,7 @@ unsafe fn bottom_right_popup_point(hwnd: HWND) -> POINT {
     let wa = work_area_for(hwnd);
     POINT {
         x: wa.right - POPUP_W as i32 - 12,
-        y: wa.bottom - SCORE_H as i32 - POPUP_H as i32 - 20,
+        y: wa.bottom - POPUP_H as i32 - 12,
     }
 }
 
@@ -427,47 +443,36 @@ unsafe fn show_dashboard(state: &mut AppState) {
 unsafe fn toggle_dashboard_maximize(state: &mut AppState) {
     let hwnd = state.dash_hwnd;
     let restore_rect = state.dashboard_restore_rect;
-    let pos = {
-        let Some(r) = state.dash_renderer.as_mut() else {
-            return;
-        };
-
-        if !r.is_maximized {
-            let mut current = RECT::default();
-            let _ = GetWindowRect(hwnd, &mut current);
-            state.dashboard_restore_rect = current;
-
-            let wa = work_area_for(hwnd);
-            let width = wa.right - wa.left;
-            let height = wa.bottom - wa.top;
-            r.is_maximized = true;
-            let _ = SetWindowPos(hwnd, None, wa.left, wa.top, width, height, SWP_NOACTIVATE);
-            let _ = r.resize(width as u32, height as u32);
-            POINT {
-                x: wa.left,
-                y: wa.top,
-            }
-        } else {
-            let width = restore_rect.right - restore_rect.left;
-            let height = restore_rect.bottom - restore_rect.top;
-            r.is_maximized = false;
-            let _ = SetWindowPos(
-                hwnd,
-                None,
-                restore_rect.left,
-                restore_rect.top,
-                width,
-                height,
-                SWP_NOACTIVATE,
-            );
-            let _ = r.resize(width as u32, height as u32);
-            POINT {
-                x: restore_rect.left,
-                y: restore_rect.top,
-            }
-        }
+    let Some(r) = state.dash_renderer.as_mut() else {
+        return;
     };
-    present_dashboard(state, pos);
+
+    if !r.is_maximized {
+        let mut current = RECT::default();
+        let _ = GetWindowRect(hwnd, &mut current);
+        state.dashboard_restore_rect = current;
+
+        let wa = work_area_for(hwnd);
+        let width = wa.right - wa.left;
+        let height = wa.bottom - wa.top;
+        r.is_maximized = true;
+        let _ = SetWindowPos(hwnd, None, wa.left, wa.top, width, height, SWP_NOACTIVATE);
+    } else {
+        let min_w = scale_for_dpi(DASH_NORMAL_W, state.dpi) as i32;
+        let min_h = scale_for_dpi(DASH_NORMAL_H, state.dpi) as i32;
+        let width = (restore_rect.right - restore_rect.left).max(min_w);
+        let height = (restore_rect.bottom - restore_rect.top).max(min_h);
+        r.is_maximized = false;
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            restore_rect.left,
+            restore_rect.top,
+            width,
+            height,
+            SWP_NOACTIVATE,
+        );
+    }
 }
 
 /// Mirrors standard Windows behavior: pulling a maximized window from its title bar
@@ -547,42 +552,36 @@ unsafe fn present_dashboard_hwnd(state: &mut AppState, hwnd: HWND) {
 unsafe fn restore_dashboard_for_drag(state: &mut AppState, grab_x: f32, grab_y: f32) {
     let hwnd = state.dash_hwnd;
     let restore = state.dashboard_restore_rect;
-    let pos = {
-        let Some(renderer) = state.dash_renderer.as_mut() else {
-            return;
-        };
-        if !renderer.is_maximized {
-            return;
-        }
-
-        let mut cursor = POINT::default();
-        let _ = GetCursorPos(&mut cursor);
-        let mut maximized = RECT::default();
-        let _ = GetWindowRect(hwnd, &mut maximized);
-        let max_width = (maximized.right - maximized.left).max(1) as f32;
-        let normal_width = (restore.right - restore.left).max(1);
-        let normal_height = (restore.bottom - restore.top).max(1);
-        let pointer_ratio = (grab_x / max_width).clamp(0.12, 0.88);
-        let new_left = cursor.x - (normal_width as f32 * pointer_ratio).round() as i32;
-        let new_top = cursor.y - grab_y.round().clamp(12.0, 32.0) as i32;
-
-        renderer.is_maximized = false;
-        let _ = SetWindowPos(
-            hwnd,
-            None,
-            new_left,
-            new_top,
-            normal_width,
-            normal_height,
-            SWP_NOACTIVATE,
-        );
-        let _ = renderer.resize(normal_width as u32, normal_height as u32);
-        POINT {
-            x: new_left,
-            y: new_top,
-        }
+    let Some(renderer) = state.dash_renderer.as_mut() else {
+        return;
     };
-    present_dashboard(state, pos);
+    if !renderer.is_maximized {
+        return;
+    }
+
+    let mut cursor = POINT::default();
+    let _ = GetCursorPos(&mut cursor);
+    let mut maximized = RECT::default();
+    let _ = GetWindowRect(hwnd, &mut maximized);
+    let max_width = (maximized.right - maximized.left).max(1) as f32;
+    let min_w = scale_for_dpi(DASH_NORMAL_W, state.dpi) as i32;
+    let min_h = scale_for_dpi(DASH_NORMAL_H, state.dpi) as i32;
+    let normal_width = (restore.right - restore.left).max(min_w);
+    let normal_height = (restore.bottom - restore.top).max(min_h);
+    let pointer_ratio = (grab_x / max_width).clamp(0.12, 0.88);
+    let new_left = cursor.x - (normal_width as f32 * pointer_ratio).round() as i32;
+    let new_top = cursor.y - grab_y.round().clamp(12.0, 32.0) as i32;
+
+    renderer.is_maximized = false;
+    let _ = SetWindowPos(
+        hwnd,
+        None,
+        new_left,
+        new_top,
+        normal_width,
+        normal_height,
+        SWP_NOACTIVATE,
+    );
 }
 
 #[cfg(windows)]
@@ -848,14 +847,15 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_APP_TRAY => {
-            let event = lparam.0 as u32;
+            // NOTIFYICON_VERSION_4 packs event in LOWORD and icon ID in HIWORD.
+            let event = (lparam.0 as u32) & 0xFFFF;
             match event {
-                windows::Win32::UI::WindowsAndMessaging::WM_LBUTTONUP => {
+                WM_LBUTTONUP | 0x0400 /* NIN_SELECT */ | 0x0401 /* NIN_KEYSELECT */ => {
                     if let Some(state) = state_ptr.as_mut() {
                         toggle_scoreboard(hwnd, state);
                     }
                 }
-                windows::Win32::UI::WindowsAndMessaging::WM_RBUTTONUP => {
+                WM_RBUTTONUP | WM_CONTEXTMENU => {
                     if let Some(state) = state_ptr.as_mut() {
                         state.tray.show_context_menu();
                     }
@@ -865,7 +865,7 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_COMMAND => {
-            let id = (wparam.0 & 0xFFFF) as usize;
+            let id = wparam.0 & 0xFFFF;
             if let Some(state) = state_ptr.as_mut() {
                 match id {
                     ID_TRAY_TOGGLE_SCORE => toggle_scoreboard(hwnd, state),
@@ -983,6 +983,10 @@ unsafe extern "system" fn dashboard_wnd_proc(
         WM_DPICHANGED => {
             // Adopt the system-suggested rect, resize the renderer, re-present.
             if let Some(state) = state_ptr.as_mut() {
+                let dpi = (wparam.0 & 0xFFFF) as u32;
+                let dpi = if dpi == 0 { GetDpiForWindow(hwnd) } else { dpi };
+                let dpi = if dpi == 0 { 96 } else { dpi };
+                state.dpi = dpi;
                 let suggested = *(lparam.0 as *const RECT);
                 let w = (suggested.right - suggested.left).max(1) as u32;
                 let h = (suggested.bottom - suggested.top).max(1) as u32;
@@ -996,7 +1000,7 @@ unsafe extern "system" fn dashboard_wnd_proc(
                     SWP_NOACTIVATE,
                 );
                 if let Some(r) = state.dash_renderer.as_mut() {
-                    let _ = r.resize(w, h);
+                    let _ = r.resize(w, h, dpi);
                 }
                 present_dashboard_hwnd(state, hwnd);
             }
@@ -1017,49 +1021,149 @@ unsafe extern "system" fn dashboard_wnd_proc(
                         SWP_NOACTIVATE,
                     );
                     if let Some(r) = state.dash_renderer.as_mut() {
-                        let _ = r.resize((wa.right - wa.left) as u32, (wa.bottom - wa.top) as u32);
+                        let _ = r.resize((wa.right - wa.left) as u32, (wa.bottom - wa.top) as u32, state.dpi);
                     }
                     present_dashboard_hwnd(state, hwnd);
                 }
             }
             LRESULT(0)
         }
-        WM_LBUTTONDOWN => {
+        WM_SIZE => {
+            let new_w = (lparam.0 & 0xFFFF) as u32;
+            let new_h = (lparam.0 >> 16) as u32;
+            if !IsIconic(hwnd).as_bool() && new_w > 0 && new_h > 0 {
+                if let Some(state) = state_ptr.as_mut() {
+                    let wa = work_area_for(hwnd);
+                    let wa_w = (wa.right - wa.left) as u32;
+                    let wa_h = (wa.bottom - wa.top) as u32;
+                    let is_max = new_w >= wa_w.saturating_sub(4) && new_h >= wa_h.saturating_sub(4);
+                    if let Some(r) = state.dash_renderer.as_mut() {
+                        r.is_maximized = is_max;
+                        let _ = r.resize(new_w, new_h, state.dpi);
+                    }
+                    present_dashboard_hwnd(state, hwnd);
+                }
+            }
+            LRESULT(0)
+        }
+        WM_EXITSIZEMOVE => {
+            if let Some(state) = state_ptr.as_mut() {
+                let is_max = state.dash_renderer.as_ref().is_some_and(|r| r.is_maximized);
+                if !is_max {
+                    let mut rect = RECT::default();
+                    if GetWindowRect(hwnd, &mut rect).is_ok() {
+                        state.dashboard_restore_rect = rect;
+                    }
+                }
+            }
+            LRESULT(0)
+        }
+        WM_LBUTTONDBLCLK => {
             let x = (lparam.0 & 0xFFFF) as i16 as f32;
             let y = (lparam.0 >> 16) as i16 as f32;
-
-            // P0-8: never hold `&mut AppState` across SendMessageW. The send
-            // re-enters dashboard_wnd_proc, which takes its own &mut — two live
-            // &mut to the same Box is UB. Scope the borrow to a bool, drop it,
-            // then send (the re-entered proc re-fetches state_ptr itself).
-            let start_drag = if let Some(state) = state_ptr.as_mut() {
+            if let Some(state) = state_ptr.as_mut() {
+                state.title_drag_pending = None;
+                let _ = ReleaseCapture();
                 let hit = state
                     .dash_renderer
                     .as_ref()
                     .and_then(|r| r.hit_test(x, y, state.dash_matches.len()));
                 if matches!(hit, Some(HitTarget::TitleBar)) {
-                    restore_dashboard_for_drag(state, x, y);
-                    true
-                } else {
-                    false
+                    toggle_dashboard_maximize(state);
+                    return LRESULT(0);
                 }
-            } else {
-                false
-            };
-            if start_drag {
-                let _ = ReleaseCapture();
-                let _ = SendMessageW(
-                    hwnd,
-                    WM_NCLBUTTONDOWN,
-                    WPARAM(HTCAPTION as usize),
-                    LPARAM(0),
-                );
+            }
+            LRESULT(0)
+        }
+        WM_NCLBUTTONDBLCLK => {
+            if wparam.0 == HTCAPTION as usize {
+                if let Some(state) = state_ptr.as_mut() {
+                    state.title_drag_pending = None;
+                    let _ = ReleaseCapture();
+                    toggle_dashboard_maximize(state);
+                }
                 return LRESULT(0);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_LBUTTONDOWN => {
+            let x = (lparam.0 & 0xFFFF) as i16 as f32;
+            let y = (lparam.0 >> 16) as i16 as f32;
+
+            if let Some(state) = state_ptr.as_mut() {
+                let hit = state
+                    .dash_renderer
+                    .as_ref()
+                    .and_then(|r| r.hit_test(x, y, state.dash_matches.len()));
+                if matches!(hit, Some(HitTarget::CricketTab))
+                    || matches!(hit, Some(HitTarget::FootballTab))
+                {
+                    let sport = if matches!(hit, Some(HitTarget::CricketTab)) {
+                        DashboardSport::Cricket
+                    } else {
+                        DashboardSport::Football
+                    };
+                    let changed = if let Some(r) = state.dash_renderer.as_mut() {
+                        if r.active_sport != sport {
+                            r.active_sport = sport;
+                            r.scroll_offset = 0.0;
+                            r.target_scroll_offset = 0.0;
+                            let _ = KillTimer(hwnd, DASH_SCROLL_TIMER);
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                    if changed {
+                        present_dashboard_hwnd(state, hwnd);
+                    }
+                    return LRESULT(0);
+                }
+
+                if matches!(hit, Some(HitTarget::TitleBar)) {
+                    let is_max = state.dash_renderer.as_ref().is_some_and(|r| r.is_maximized);
+                    if is_max {
+                        let mut cur = POINT::default();
+                        let _ = GetCursorPos(&mut cur);
+                        state.title_drag_pending = Some((x, y, cur));
+                        let _ = SetCapture(hwnd);
+                        return LRESULT(0);
+                    } else {
+                        let _ = ReleaseCapture();
+                        let _ = SendMessageW(
+                            hwnd,
+                            WM_NCLBUTTONDOWN,
+                            WPARAM(HTCAPTION as usize),
+                            LPARAM(0),
+                        );
+                        return LRESULT(0);
+                    }
+                }
             }
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
             if let Some(state) = state_ptr.as_mut() {
+                if let Some((grab_x, grab_y, start_cur)) = state.title_drag_pending {
+                    let mut cur = POINT::default();
+                    if GetCursorPos(&mut cur).is_ok()
+                        && ((cur.x - start_cur.x).abs() > 4 || (cur.y - start_cur.y).abs() > 4)
+                    {
+                        state.title_drag_pending = None;
+                        let _ = ReleaseCapture();
+                        restore_dashboard_for_drag(state, grab_x, grab_y);
+                        let _ = SendMessageW(
+                            hwnd,
+                            WM_NCLBUTTONDOWN,
+                            WPARAM(HTCAPTION as usize),
+                            LPARAM(0),
+                        );
+                        return LRESULT(0);
+                    }
+                }
+
                 let x = (lparam.0 & 0xFFFF) as i16 as f32;
                 let y = (lparam.0 >> 16) as i16 as f32;
 
@@ -1153,10 +1257,71 @@ unsafe extern "system" fn dashboard_wnd_proc(
             if let Some(state) = state_ptr.as_mut() {
                 // High-resolution wheels send partial deltas: accumulate to WHEEL_DELTA notches.
                 let delta = ((wparam.0 >> 16) & 0xffff) as u16 as i16 as i32;
-                if let Some(r) = state.dash_renderer.as_mut() {
-                    r.accumulate_wheel(delta);
+                let (target_changed, still_anim) = if let Some(r) = state.dash_renderer.as_mut() {
+                    let changed = r.accumulate_wheel(delta);
+                    if changed {
+                        r.step_scroll_animation();
+                    }
+                    (
+                        changed,
+                        (r.scroll_offset - r.target_scroll_offset).abs() >= 0.5,
+                    )
+                } else {
+                    (false, false)
+                };
+                if target_changed || still_anim {
+                    if still_anim {
+                        let _ = SetTimer(hwnd, DASH_SCROLL_TIMER, DASH_SCROLL_MS, None);
+                    }
+                    let mut pt = POINT::default();
+                    if GetCursorPos(&mut pt).is_ok() {
+                        let mut screen_rect = RECT::default();
+                        if GetWindowRect(hwnd, &mut screen_rect).is_ok() {
+                            let x = (pt.x - screen_rect.left) as f32;
+                            let y = (pt.y - screen_rect.top) as f32;
+                            if let Some(r) = state.dash_renderer.as_mut() {
+                                let hit = r.hit_test(x, y, state.dash_matches.len());
+                                let (
+                                    hover_idx,
+                                    action_idx,
+                                    min_h,
+                                    max_h,
+                                    close_h,
+                                    cricket_h,
+                                    football_h,
+                                ) = match hit {
+                                    Some(HitTarget::MinimizeButton) => {
+                                        (None, None, true, false, false, false, false)
+                                    }
+                                    Some(HitTarget::MaximizeButton) => {
+                                        (None, None, false, true, false, false, false)
+                                    }
+                                    Some(HitTarget::CloseButton) => {
+                                        (None, None, false, false, true, false, false)
+                                    }
+                                    Some(HitTarget::CricketTab) => {
+                                        (None, None, false, false, false, true, false)
+                                    }
+                                    Some(HitTarget::FootballTab) => {
+                                        (None, None, false, false, false, false, true)
+                                    }
+                                    Some(HitTarget::MatchItem(idx)) => {
+                                        (Some(idx), None, false, false, false, false, false)
+                                    }
+                                    Some(HitTarget::MatchAction(idx)) => {
+                                        (Some(idx), Some(idx), false, false, false, false, false)
+                                    }
+                                    _ => (None, None, false, false, false, false, false),
+                                };
+                                r.set_hover(
+                                    hover_idx, action_idx, min_h, max_h, close_h, cricket_h,
+                                    football_h,
+                                );
+                            }
+                        }
+                    }
+                    present_dashboard_hwnd(state, hwnd);
                 }
-                present_dashboard_hwnd(state, hwnd);
             }
             LRESULT(0)
         }
@@ -1174,12 +1339,79 @@ unsafe extern "system" fn dashboard_wnd_proc(
         }
         WM_TIMER => {
             if wparam.0 == DASH_LOADER_TIMER {
+                if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
+                    let _ = KillTimer(hwnd, DASH_LOADER_TIMER);
+                    return LRESULT(0);
+                }
                 if let Some(state) = state_ptr.as_mut() {
                     if dashboard_is_loading(state) {
                         present_dashboard_hwnd(state, hwnd);
                     } else {
                         let _ = KillTimer(hwnd, DASH_LOADER_TIMER);
                     }
+                }
+            } else if wparam.0 == DASH_SCROLL_TIMER {
+                if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
+                    let _ = KillTimer(hwnd, DASH_SCROLL_TIMER);
+                    return LRESULT(0);
+                }
+                if let Some(state) = state_ptr.as_mut() {
+                    let still_animating = if let Some(r) = state.dash_renderer.as_mut() {
+                        r.step_scroll_animation()
+                    } else {
+                        false
+                    };
+                    if !still_animating {
+                        let _ = KillTimer(hwnd, DASH_SCROLL_TIMER);
+                    }
+                    let mut pt = POINT::default();
+                    if GetCursorPos(&mut pt).is_ok() {
+                        let mut screen_rect = RECT::default();
+                        if GetWindowRect(hwnd, &mut screen_rect).is_ok() {
+                            let x = (pt.x - screen_rect.left) as f32;
+                            let y = (pt.y - screen_rect.top) as f32;
+                            if let Some(r) = state.dash_renderer.as_mut() {
+                                let hit = r.hit_test(x, y, state.dash_matches.len());
+                                let (
+                                    hover_idx,
+                                    action_idx,
+                                    min_h,
+                                    max_h,
+                                    close_h,
+                                    cricket_h,
+                                    football_h,
+                                ) = match hit {
+                                    Some(HitTarget::MinimizeButton) => {
+                                        (None, None, true, false, false, false, false)
+                                    }
+                                    Some(HitTarget::MaximizeButton) => {
+                                        (None, None, false, true, false, false, false)
+                                    }
+                                    Some(HitTarget::CloseButton) => {
+                                        (None, None, false, false, true, false, false)
+                                    }
+                                    Some(HitTarget::CricketTab) => {
+                                        (None, None, false, false, false, true, false)
+                                    }
+                                    Some(HitTarget::FootballTab) => {
+                                        (None, None, false, false, false, false, true)
+                                    }
+                                    Some(HitTarget::MatchItem(idx)) => {
+                                        (Some(idx), None, false, false, false, false, false)
+                                    }
+                                    Some(HitTarget::MatchAction(idx)) => {
+                                        (Some(idx), Some(idx), false, false, false, false, false)
+                                    }
+                                    _ => (None, None, false, false, false, false, false),
+                                };
+                                r.set_hover(
+                                    hover_idx, action_idx, min_h, max_h, close_h, cricket_h,
+                                    football_h,
+                                );
+                            }
+                        }
+                    }
+                    present_dashboard_hwnd(state, hwnd);
                 }
             }
             LRESULT(0)
@@ -1189,12 +1421,17 @@ unsafe extern "system" fn dashboard_wnd_proc(
             let y = (lparam.0 >> 16) as i16 as f32;
 
             if let Some(state) = state_ptr.as_mut() {
+                if state.title_drag_pending.is_some() {
+                    state.title_drag_pending = None;
+                    let _ = ReleaseCapture();
+                }
                 let hit = state
                     .dash_renderer
                     .as_ref()
                     .map(|r| r.hit_test(x, y, state.dash_matches.len()));
                 match hit {
                     Some(Some(HitTarget::MinimizeButton)) => {
+                        let _ = KillTimer(hwnd, DASH_SCROLL_TIMER);
                         let _ = ShowWindow(hwnd, SW_MINIMIZE);
                     }
                     Some(Some(HitTarget::MaximizeButton)) => {
@@ -1202,6 +1439,7 @@ unsafe extern "system" fn dashboard_wnd_proc(
                     }
                     Some(Some(HitTarget::CloseButton)) => {
                         let _ = KillTimer(hwnd, DASH_LOADER_TIMER);
+                        let _ = KillTimer(hwnd, DASH_SCROLL_TIMER);
                         let _ = ShowWindow(hwnd, SW_HIDE);
                     }
                     Some(Some(HitTarget::CricketTab)) | Some(Some(HitTarget::FootballTab)) => {
@@ -1213,7 +1451,9 @@ unsafe extern "system" fn dashboard_wnd_proc(
                         let changed = if let Some(r) = state.dash_renderer.as_mut() {
                             if r.active_sport != sport {
                                 r.active_sport = sport;
-                                r.scroll_offset = 0;
+                                r.scroll_offset = 0.0;
+                                r.target_scroll_offset = 0.0;
+                                let _ = KillTimer(hwnd, DASH_SCROLL_TIMER);
                                 true
                             } else {
                                 false
@@ -1225,50 +1465,46 @@ unsafe extern "system" fn dashboard_wnd_proc(
                             present_dashboard_hwnd(state, hwnd);
                         }
                     }
-                    Some(Some(HitTarget::MatchAction(idx))) => {
+                    Some(Some(HitTarget::MatchAction(idx)))
+                    | Some(Some(HitTarget::MatchItem(idx)))
+                        if idx < state.dash_matches.len() =>
+                    {
                         // Stable select: post a heap-allocated match_id, never the
                         // hit-test index (TOCTOU across list refreshes). The main
                         // proc reclaims via Box::from_raw on receipt.
                         // PostMessageW is async (no re-entrancy), so posting while
                         // holding `state` is safe (unlike SendMessageW, cf. P0-8).
-                        if idx < state.dash_matches.len() {
-                            let match_id = state.dash_matches[idx].match_id.clone();
-                            if match_id.is_empty() {
-                                // Stale/empty id: ignore, user can click again.
+                        let match_id = state.dash_matches[idx].match_id.clone();
+                        if !match_id.is_empty() {
+                            let selected = state
+                                .dash_selected_id
+                                .as_ref()
+                                .is_some_and(|id| id == &match_id);
+                            if selected {
+                                post_ui_msg(parent_hwnd, WM_APP_UNTRACK, WPARAM(0), LPARAM(0));
                             } else {
-                                let selected = state
-                                    .dash_selected_id
-                                    .as_ref()
-                                    .is_some_and(|id| id == &match_id);
-                                if selected {
-                                    post_ui_msg(parent_hwnd, WM_APP_UNTRACK, WPARAM(0), LPARAM(0));
-                                } else {
-                                    let raw = Box::into_raw(Box::new(match_id));
-                                    if PostMessageW(
-                                        parent_hwnd,
-                                        WM_APP_SELECT_MATCH,
-                                        WPARAM(raw as usize),
-                                        LPARAM(0),
-                                    )
-                                    .is_err()
-                                    {
-                                        // Queue full: reclaim to avoid a leak; the
-                                        // click is user-retryable. Never double-post
-                                        // the same pointer (would double-free).
-                                        unsafe {
-                                            drop(Box::from_raw(raw));
-                                        }
-                                        #[cfg(debug_assertions)]
-                                        sportspulse::render::dbglog(
-                                            "select post queue-full, reclaimed (click retry)",
-                                        );
+                                let raw = Box::into_raw(Box::new(match_id));
+                                if PostMessageW(
+                                    parent_hwnd,
+                                    WM_APP_SELECT_MATCH,
+                                    WPARAM(raw as usize),
+                                    LPARAM(0),
+                                )
+                                .is_err()
+                                {
+                                    // Queue full: reclaim to avoid a leak; the
+                                    // click is user-retryable. Never double-post
+                                    // the same pointer (would double-free).
+                                    unsafe {
+                                        drop(Box::from_raw(raw));
                                     }
+                                    #[cfg(debug_assertions)]
+                                    sportspulse::render::dbglog(
+                                        "select post queue-full, reclaimed (click retry)",
+                                    );
                                 }
                             }
                         }
-                    }
-                    Some(Some(HitTarget::MatchItem(_))) => {
-                        // Card body is hover-only. Track / untrack is the action button.
                     }
                     _ => {}
                 }
@@ -1410,12 +1646,17 @@ fn main() {
         };
 
         // 1. Register Main Scoreboard Window Class
+        let icon_big = load_app_icon(32);
+        let icon_small = load_app_icon(16);
+
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
             style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(wnd_proc),
             hInstance: hinstance.into(),
+            hIcon: icon_big,
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or(HCURSOR::default()),
+            hIconSm: icon_small,
             lpszClassName: CLASS_NAME,
             ..Default::default()
         };
@@ -1425,10 +1666,12 @@ fn main() {
         const DASH_CLASS: PCWSTR = w!("SPNativeDashboard");
         let wc_dash = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
-            style: CS_HREDRAW | CS_VREDRAW,
+            style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS,
             lpfnWndProc: Some(dashboard_wnd_proc),
             hInstance: hinstance.into(),
+            hIcon: icon_big,
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or(HCURSOR::default()),
+            hIconSm: icon_small,
             lpszClassName: DASH_CLASS,
             ..Default::default()
         };
@@ -1462,19 +1705,30 @@ fn main() {
 
         HMAIN.store(hwnd.0 as usize, Ordering::Release);
 
-        // 4. Create Dashboard Window
-        let dash_pos = center_screen_point(hwnd, DASH_NORMAL_W, DASH_NORMAL_H);
+        // Real DPI for this monitor (96 fallback); refreshed on WM_DPICHANGED.
+        let dpi = GetDpiForWindow(hwnd);
+        let dpi = if dpi == 0 { 96 } else { dpi };
+
+        let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_BIG as usize), LPARAM(icon_big.0 as isize));
+        let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_SMALL as usize), LPARAM(icon_small.0 as isize));
+
+        // 4. Create Dashboard Window scaled for monitor DPI
+        let max_dash_w = ((primary_wa.right - primary_wa.left) - 64).max(640) as u32;
+        let max_dash_h = ((primary_wa.bottom - primary_wa.top) - 64).max(480) as u32;
+        let init_dash_w = scale_for_dpi(DASH_NORMAL_W, dpi).min(max_dash_w);
+        let init_dash_h = scale_for_dpi(DASH_NORMAL_H, dpi).min(max_dash_h);
+        let dash_pos = center_screen_point(hwnd, init_dash_w, init_dash_h);
         let dash_hwnd = match CreateWindowExW(
             // The discovery dashboard is a normal taskbar application while open.
             // The lightweight scoreboard itself remains a tray-only topmost overlay.
             WS_EX_LAYERED | WS_EX_APPWINDOW,
             DASH_CLASS,
-            PCWSTR::null(),
+            w!("SportsPulse Dashboard"),
             WS_POPUP,
             dash_pos.x,
             dash_pos.y,
-            DASH_NORMAL_W as i32,
-            DASH_NORMAL_H as i32,
+            init_dash_w as i32,
+            init_dash_h as i32,
             None,
             HMENU::default(),
             hinstance,
@@ -1484,20 +1738,24 @@ fn main() {
             Err(_) => fatal_startup("CreateWindowExW failed for dashboard window"),
         };
 
+        let _ = SendMessageW(dash_hwnd, WM_SETICON, WPARAM(ICON_BIG as usize), LPARAM(icon_big.0 as isize));
+        let _ = SendMessageW(dash_hwnd, WM_SETICON, WPARAM(ICON_SMALL as usize), LPARAM(icon_small.0 as isize));
+
         // 5. Create Components
-        let renderer = match Renderer::new(hwnd, SCORE_W, SCORE_H) {
+        let mut renderer = match Renderer::new(hwnd, SCORE_W, SCORE_H) {
             Ok(r) => r,
             Err(_) => fatal_startup("Direct2D scoreboard renderer init failed"),
         };
-        let dash_renderer = DashboardRenderer::new(dash_hwnd, DASH_NORMAL_W, DASH_NORMAL_H).ok();
+        renderer.set_dpi(dpi);
+
+        let dash_renderer = DashboardRenderer::new(dash_hwnd, init_dash_w, init_dash_h, dpi).ok();
         let popup_win = MiniPopupWindow::create().ok();
-        let tray = TrayIcon::new(hwnd, "SportsPulse - Live Scores");
+        let tray_icon_size = scale_for_dpi(16, dpi) as i32;
+        let tray_icon = load_app_icon(tray_icon_size);
+        let tray = TrayIcon::new(hwnd, "SportsPulse - Live Scores", Some(tray_icon));
 
         let cache = ScoreCache::new();
         let match_state = ActiveMatchesState::new();
-
-        // Real DPI for this monitor (96 fallback); refreshed on WM_DPICHANGED.
-        let dpi = GetDpiForWindow(hwnd);
 
         let app_state = Box::new(AppState {
             renderer,
@@ -1512,10 +1770,11 @@ fn main() {
             dashboard_restore_rect: RECT {
                 left: dash_pos.x,
                 top: dash_pos.y,
-                right: dash_pos.x + DASH_NORMAL_W as i32,
-                bottom: dash_pos.y + DASH_NORMAL_H as i32,
+                right: dash_pos.x + init_dash_w as i32,
+                bottom: dash_pos.y + init_dash_h as i32,
             },
-            dpi: if dpi == 0 { 96 } else { dpi },
+            dpi,
+            title_drag_pending: None,
         });
 
         // P0-6: single Box owner shared via raw ptr. Both windows point at the

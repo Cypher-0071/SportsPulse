@@ -7,6 +7,7 @@
 
 use std::cell::RefCell;
 use std::marker::PhantomData;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -90,9 +91,19 @@ pub fn ui_text(s: &str, max_chars: usize) -> String {
 
 /// Reduced-motion: true when the user disabled client-area animation
 /// (SPI_GETCLIENTAREAANIMATION). Callers swap the spinner / flash timers for
-/// a static ring + persistent card.
+/// a static ring + persistent card. Throttled to avoid per-frame syscalls.
 pub fn reduced_motion() -> bool {
-    unsafe {
+    static CACHE: AtomicU64 = AtomicU64::new(0);
+    let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(d) => d.as_secs(),
+        Err(_) => 0,
+    };
+    let packed = CACHE.load(Ordering::Relaxed);
+    let last_time = packed >> 1;
+    if now.saturating_sub(last_time) < 2 {
+        return (packed & 1) != 0;
+    }
+    let res = unsafe {
         let mut enabled = BOOL(1);
         if SystemParametersInfoW(
             SPI_GETCLIENTAREAANIMATION,
@@ -102,25 +113,37 @@ pub fn reduced_motion() -> bool {
         )
         .is_ok()
         {
-            return enabled.0 == 0;
+            enabled.0 == 0
+        } else {
+            false
         }
-        false
-    }
+    };
+    CACHE.store((now << 1) | (if res { 1 } else { 0 }), Ordering::Relaxed);
+    res
 }
 
 /// High-contrast: SPI_GETHIGHCONTRAST (HIGHCONTRASTF_ON), with a GetSysColor
 /// black/white-inversion sniff as fallback. Callers switch to 2px borders
-/// (surfaces are already opaque).
+/// (surfaces are already opaque). Throttled to avoid per-frame syscalls.
 pub fn high_contrast() -> bool {
-    // Local mirror of HIGHCONTRASTW so no new windows features are needed.
-    #[repr(C)]
-    struct RawHc {
-        cb_size: u32,
-        flags: u32,
-        scheme: *mut u16,
+    static CACHE: AtomicU64 = AtomicU64::new(0);
+    let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(d) => d.as_secs(),
+        Err(_) => 0,
+    };
+    let packed = CACHE.load(Ordering::Relaxed);
+    let last_time = packed >> 1;
+    if now.saturating_sub(last_time) < 2 {
+        return (packed & 1) != 0;
     }
-    const HCF_ON: u32 = 1; // HIGHCONTRASTF_ON
-    unsafe {
+    let res = unsafe {
+        #[repr(C)]
+        struct RawHc {
+            cb_size: u32,
+            flags: u32,
+            scheme: *mut u16,
+        }
+        const HCF_ON: u32 = 1; // HIGHCONTRASTF_ON
         let mut hc = RawHc {
             cb_size: std::mem::size_of::<RawHc>() as u32,
             flags: 0,
@@ -135,13 +158,15 @@ pub fn high_contrast() -> bool {
         .is_ok()
             && hc.flags & HCF_ON != 0
         {
-            return true;
+            true
+        } else {
+            let bg = GetSysColor(COLOR_WINDOW);
+            let fg = GetSysColor(COLOR_WINDOWTEXT);
+            (bg == 0x00FF_FFFF && fg == 0x0000_0000) || (bg == 0x0000_0000 && fg == 0x00FF_FFFF)
         }
-        // Fallback: classic HC themes pin window/text to pure black/white.
-        let bg = GetSysColor(COLOR_WINDOW);
-        let fg = GetSysColor(COLOR_WINDOWTEXT);
-        (bg == 0x00FF_FFFF && fg == 0x0000_0000) || (bg == 0x0000_0000 && fg == 0x00FF_FFFF)
-    }
+    };
+    CACHE.store((now << 1) | (if res { 1 } else { 0 }), Ordering::Relaxed);
+    res
 }
 
 /// Shared flash TTLs (spec: WIN 8s, EVENT 5s). Single source of truth used by
@@ -199,7 +224,7 @@ fn clean_title(title: &str) -> String {
         return String::new();
     }
     title
-        .split(|c| c == '•' || c == ',')
+        .split(['•', ','])
         .next()
         .unwrap_or(title)
         .trim()
@@ -477,27 +502,29 @@ pub struct Brushes {
     pub blue_badge_bg: ID2D1SolidColorBrush,
     pub purple_accent: ID2D1SolidColorBrush,
     pub purple_badge_bg: ID2D1SolidColorBrush,
+    pub gold_accent: ID2D1SolidColorBrush,
 }
 
 impl Brushes {
     unsafe fn create(rt: &ID2D1RenderTarget) -> Result<Self> {
         Ok(Self {
-            bg: rt.CreateSolidColorBrush(&color(0.125, 0.125, 0.125, 1.0), None)?, // #202020 SOLID
-            card_surface: rt.CreateSolidColorBrush(&color(0.176, 0.176, 0.176, 1.0), None)?, // #2D2D2D SOLID
-            border: rt.CreateSolidColorBrush(&color(0.245, 0.245, 0.245, 1.0), None)?, // #3E3E3E SOLID
-            white: rt.CreateSolidColorBrush(&color(1.0, 1.0, 1.0, 1.0), None)?,        // #FFFFFF
-            dim: rt.CreateSolidColorBrush(&color(0.65, 0.65, 0.65, 1.0), None)?,       // #A6A6A6
-            subtle: rt.CreateSolidColorBrush(&color(0.65, 0.65, 0.65, 1.0), None)?, // #A6A6A6 (raised from #707070 for 4.5:1)
+            bg: rt.CreateSolidColorBrush(&color(0.110, 0.110, 0.110, 1.0), None)?, // #1C1C1C
+            card_surface: rt.CreateSolidColorBrush(&color(0.176, 0.176, 0.176, 1.0), None)?, // #2D2D2D
+            border: rt.CreateSolidColorBrush(&color(0.176, 0.176, 0.176, 1.0), None)?, // #2D2D2D
+            white: rt.CreateSolidColorBrush(&color(0.910, 0.910, 0.925, 1.0), None)?,  // #E8E8EC
+            dim: rt.CreateSolidColorBrush(&color(0.545, 0.561, 0.627, 1.0), None)?,    // #8B8FA0
+            subtle: rt.CreateSolidColorBrush(&color(0.420, 0.435, 0.482, 1.0), None)?, // #6B6F7B
             green_accent: rt.CreateSolidColorBrush(&color(0.133, 0.773, 0.369, 1.0), None)?, // #22C55E
-            green_badge_bg: rt.CreateSolidColorBrush(&color(0.055, 0.240, 0.110, 1.0), None)?, // #0E3B1C SOLID
-            red_accent: rt.CreateSolidColorBrush(&color(1.0, 0.42, 0.45, 1.0), None)?, // #FF6B74 (raised from #F84B55 for 4.5:1)
-            red_badge_bg: rt.CreateSolidColorBrush(&color(0.25, 0.07, 0.07, 1.0), None)?, // darkened for contrast
-            amber_accent: rt.CreateSolidColorBrush(&color(0.961, 0.620, 0.043, 1.0), None)?, // #F59E0B
-            amber_badge_bg: rt.CreateSolidColorBrush(&color(0.320, 0.180, 0.020, 1.0), None)?, // #522E05 SOLID
-            blue_accent: rt.CreateSolidColorBrush(&color(0.220, 0.741, 0.973, 1.0), None)?, // #38BDF8
-            blue_badge_bg: rt.CreateSolidColorBrush(&color(0.020, 0.190, 0.300, 1.0), None)?, // #05304D SOLID
+            green_badge_bg: rt.CreateSolidColorBrush(&color(0.055, 0.240, 0.110, 0.4), None)?,
+            red_accent: rt.CreateSolidColorBrush(&color(1.0, 0.29, 0.29, 1.0), None)?, // #FF4A4A
+            red_badge_bg: rt.CreateSolidColorBrush(&color(1.0, 0.29, 0.29, 0.12), None)?,
+            amber_accent: rt.CreateSolidColorBrush(&color(0.941, 0.706, 0.161, 1.0), None)?, // #F0B429
+            amber_badge_bg: rt.CreateSolidColorBrush(&color(0.941, 0.706, 0.161, 0.15), None)?,
+            blue_accent: rt.CreateSolidColorBrush(&color(0.353, 0.608, 0.835, 1.0), None)?, // #5A9BD5
+            blue_badge_bg: rt.CreateSolidColorBrush(&color(0.353, 0.608, 0.835, 0.15), None)?,
             purple_accent: rt.CreateSolidColorBrush(&color(0.82, 0.60, 1.0, 1.0), None)?,
             purple_badge_bg: rt.CreateSolidColorBrush(&color(0.22, 0.07, 0.36, 1.0), None)?,
+            gold_accent: rt.CreateSolidColorBrush(&color(0.941, 0.706, 0.161, 1.0), None)?, // #F0B429
         })
     }
 }
@@ -516,6 +543,7 @@ pub struct Formats {
     pub center_dim: Fmt,
     pub no_match_title: Fmt,
     pub no_match_sub: Fmt,
+    pub no_match_icon: Fmt,
     pub flash: Fmt,
 }
 
@@ -541,50 +569,79 @@ impl Formats {
                 })
             };
 
+        let fmt_icon_fmt = dwrite.CreateTextFormat(
+            w!("Segoe UI Emoji"),
+            None,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            22.0,
+            w!("en-us"),
+        )?;
+        fmt_icon_fmt.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+        fmt_icon_fmt.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+        fmt_icon_fmt.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+
         Ok(Self {
             title: mk(
-                15.0,
+                10.0,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
             )?,
-            team_name: mk(24.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING)?,
+            team_name: mk(13.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING)?,
             team_name_right: mk(
-                24.0,
-                DWRITE_FONT_WEIGHT_BOLD,
+                12.0,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 DWRITE_TEXT_ALIGNMENT_TRAILING,
             )?,
-            score_large: mk(38.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING)?,
-            score_medium: mk(28.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING)?,
-            score_center: mk(38.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
-            overs: mk(
-                17.0,
-                DWRITE_FONT_WEIGHT_MEDIUM,
+            score_large: mk(
+                13.0,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_TEXT_ALIGNMENT_TRAILING,
+            )?,
+            score_medium: mk(
+                12.0,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
             )?,
-            overs_right: mk(
-                17.0,
-                DWRITE_FONT_WEIGHT_MEDIUM,
+            score_center: mk(20.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
+            overs: mk(
+                10.0,
+                DWRITE_FONT_WEIGHT_NORMAL,
                 DWRITE_TEXT_ALIGNMENT_TRAILING,
             )?,
-            badge: mk(14.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
+            overs_right: mk(
+                10.0,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_TEXT_ALIGNMENT_TRAILING,
+            )?,
+            badge: mk(9.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
             info: mk(
-                15.0,
+                10.0,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_TEXT_ALIGNMENT_LEADING,
+            )?,
+            center_dim: mk(
+                10.0,
                 DWRITE_FONT_WEIGHT_NORMAL,
                 DWRITE_TEXT_ALIGNMENT_CENTER,
             )?,
-            center_dim: mk(
-                17.0,
+            no_match_title: mk(
+                11.0,
                 DWRITE_FONT_WEIGHT_MEDIUM,
                 DWRITE_TEXT_ALIGNMENT_CENTER,
             )?,
-            no_match_title: mk(26.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
             no_match_sub: mk(
-                16.0,
+                10.0,
                 DWRITE_FONT_WEIGHT_NORMAL,
                 DWRITE_TEXT_ALIGNMENT_CENTER,
             )?,
+            no_match_icon: Fmt {
+                fmt: fmt_icon_fmt,
+                buf: RefCell::new(Vec::new()),
+            },
             flash: mk(
-                13.0,
+                10.0,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
             )?,
@@ -603,6 +660,7 @@ pub struct Renderer {
     bits: *mut core::ffi::c_void,
     w: i32,
     h: i32,
+    pub dpi: u32,
     brushes: Brushes,
     formats: Formats,
     event_flash: Option<FlashState>,
@@ -670,6 +728,7 @@ impl Renderer {
             bits,
             w: w as i32,
             h: h as i32,
+            dpi: 96,
             brushes,
             formats,
             event_flash: None,
@@ -677,6 +736,14 @@ impl Renderer {
             info_parts_scratch: Vec::new(),
             _no_send: PhantomData,
         })
+    }
+
+    pub fn set_dpi(&mut self, dpi: u32) {
+        self.dpi = dpi;
+        let d = if dpi == 0 { 96.0 } else { dpi as f32 };
+        unsafe {
+            self.rt.SetDpi(d, d);
+        }
     }
 
     /// Rebuild only the WIC bitmap / render target / brushes / DIB on resize.
@@ -704,6 +771,8 @@ impl Renderer {
 
         let rt = factory.CreateWicBitmapRenderTarget(&wic, &software_rt_props())?;
         rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+        let d = if self.dpi == 0 { 96.0 } else { self.dpi as f32 };
+        rt.SetDpi(d, d);
 
         // Reuse mem_dc across resizes; recreate only if it was lost.
         if self.mem_dc.is_invalid() {
@@ -777,7 +846,8 @@ impl Renderer {
             }
         }
 
-        let (w, h) = (self.w as f32, self.h as f32);
+        let size = self.rt.GetSize();
+        let (w, h) = (size.width, size.height);
         let full = D2D_RECT_F {
             left: 0.0,
             top: 0.0,
@@ -788,14 +858,22 @@ impl Renderer {
         self.rt.BeginDraw();
         self.rt.Clear(None);
 
-        // Win11 Top-Level Window (16px rounded corners)
+        let card_radius = if let Some(score) = score {
+            if score.sport == SportType::Soccer && score.status != MatchStatus::NoMatch {
+                8.0
+            } else {
+                10.0
+            }
+        } else {
+            10.0
+        };
         let rr = D2D1_ROUNDED_RECT {
             rect: full,
-            radiusX: 16.0,
-            radiusY: 16.0,
+            radiusX: card_radius,
+            radiusY: card_radius,
         };
         self.rt.FillRoundedRectangle(&rr, &self.brushes.bg);
-        let border_w = if high_contrast() { 2.0 } else { 1.2 };
+        let border_w = if high_contrast() { 2.0 } else { 1.0 };
         self.rt
             .DrawRoundedRectangle(&rr, &self.brushes.border, border_w, None);
 
@@ -831,330 +909,274 @@ impl Renderer {
 
     unsafe fn render_cricket(&mut self, w: f32, h: f32, score: &MatchScore) {
         let show_stats = show_cricket_stats(score);
-        let header_top = if h <= 150.0 { 10.0 } else { 14.0 };
-        let header_bottom = header_top + 26.0;
+        let title = display_match_title(score).to_uppercase();
 
-        let title = display_match_title(score);
-        let badge_left = self.render_status_badge(w, header_top, score);
+        // 1. Header (y: 10.0 to 24.0)
+        let badge_left = self.render_status_badge(w, 10.0, score);
         let title_rect = D2D_RECT_F {
-            left: 26.0,
-            top: header_top,
-            right: badge_left - 10.0,
-            bottom: header_bottom,
+            left: 14.0,
+            top: 10.0,
+            right: badge_left - 8.0,
+            bottom: 24.0,
         };
         self.formats.title.text(
             &self.rt,
-            &ui_text(&title, 64),
+            &ui_text(&title, 48),
             &title_rect,
-            &self.brushes.dim,
-        );
-
-        let stats_top = if show_stats { h - 48.0 } else { h + 8.0 };
-        let body_bottom = if show_stats {
-            stats_top - 4.0
-        } else {
-            h - 10.0
-        };
-        let name_top = header_bottom + 4.0;
-        let name_bottom = name_top + 28.0;
-        let remaining = (body_bottom - name_bottom).max(36.0);
-        let score_h = if remaining > 70.0 {
-            44.0
-        } else {
-            remaining.min(44.0).max(32.0)
-        };
-        let score_top = name_bottom;
-        let score_bottom = score_top + score_h;
-        let overs_top = score_bottom;
-        let overs_bottom = (overs_top + 22.0).min(body_bottom);
-        let half = w / 2.0;
-
-        let t1_batting = score.batting_team == BATTING_TEAM1 || score.team1.is_batting;
-        let t1_name_raw = cricket_team_label(&score.team1.name, &score.team1.abbreviation, "T1");
-        // State is never color-only: the dot keeps its text twin.
-        let t1_name = if t1_batting {
-            format!("{t1_name_raw} ● BATTING")
-        } else {
-            t1_name_raw
-        };
-        let t1_name_rect = D2D_RECT_F {
-            left: 44.0,
-            top: name_top,
-            right: half - 16.0,
-            bottom: name_bottom,
-        };
-        if t1_batting {
-            let cy = (name_top + name_bottom) / 2.0;
-            let dot = D2D1_ELLIPSE {
-                point: D2D_POINT_2F { x: 30.0, y: cy },
-                radiusX: 6.0,
-                radiusY: 6.0,
-            };
-            self.rt.FillEllipse(&dot, &self.brushes.green_accent);
-        }
-        self.formats.team_name.text(
-            &self.rt,
-            &ui_text(&t1_name, 32),
-            &t1_name_rect,
-            if t1_batting {
-                &self.brushes.white
-            } else {
-                &self.brushes.dim
-            },
-        );
-
-        let t1_score_str = clean_score_string(&score.team1.score, SportType::Cricket);
-        self.formats.score_large.text(
-            &self.rt,
-            &ui_text(&t1_score_str, 24),
-            &D2D_RECT_F {
-                left: 26.0,
-                top: score_top,
-                right: half - 14.0,
-                bottom: score_bottom,
-            },
-            &self.brushes.white,
-        );
-
-        if score.team1.overs > 0.0 && overs_bottom > overs_top + 8.0 {
-            let overs_str = format!("({:.1} ov)", score.team1.overs);
-            self.formats.overs.text(
-                &self.rt,
-                &overs_str,
-                &D2D_RECT_F {
-                    left: 26.0,
-                    top: overs_top,
-                    right: half - 14.0,
-                    bottom: overs_bottom,
-                },
-                &self.brushes.dim,
-            );
-        }
-
-        self.formats.center_dim.text(
-            &self.rt,
-            "vs",
-            &D2D_RECT_F {
-                left: half - 22.0,
-                top: score_top,
-                right: half + 22.0,
-                bottom: score_bottom,
-            },
             &self.brushes.subtle,
         );
 
-        let t2_batting = score.batting_team == BATTING_TEAM2 || score.team2.is_batting;
-        let t2_name_raw = cricket_team_label(&score.team2.name, &score.team2.abbreviation, "T2");
-        let t2_name = if t2_batting {
-            format!("{t2_name_raw} ● BATTING")
-        } else {
-            t2_name_raw
-        };
-        let t2_name_rect = D2D_RECT_F {
-            left: half + 44.0,
-            top: name_top,
-            right: w - 26.0,
-            bottom: name_bottom,
-        };
-        if t2_batting {
-            let cy = (name_top + name_bottom) / 2.0;
-            let dot = D2D1_ELLIPSE {
-                point: D2D_POINT_2F {
-                    x: half + 30.0,
-                    y: cy,
-                },
-                radiusX: 6.0,
-                radiusY: 6.0,
-            };
-            self.rt.FillEllipse(&dot, &self.brushes.green_accent);
-        }
-        self.formats.team_name.text(
-            &self.rt,
-            &ui_text(&t2_name, 32),
-            &t2_name_rect,
-            if t2_batting {
-                &self.brushes.white
-            } else {
-                &self.brushes.dim
-            },
-        );
+        // 2. Stacked Team Rows
+        // Row 1: Team 1 (y: 28.0 to 48.0)
+        let t1_batting = score.batting_team == BATTING_TEAM1 || score.team1.is_batting;
+        let t1_name_raw = cricket_team_label(&score.team1.name, &score.team1.abbreviation, "T1");
+        let t1_score_str = clean_score_string(&score.team1.score, SportType::Cricket);
 
-        let t2_score_str = clean_score_string(&score.team2.score, SportType::Cricket);
+        let t1_score_rect = D2D_RECT_F {
+            left: w * 0.45,
+            top: 28.0,
+            right: w - 14.0,
+            bottom: 48.0,
+        };
         self.formats.score_large.text(
             &self.rt,
-            &ui_text(&t2_score_str, 24),
-            &D2D_RECT_F {
-                left: half + 26.0,
-                top: score_top,
-                right: w - 26.0,
-                bottom: score_bottom,
-            },
+            &ui_text(&t1_score_str, 24),
+            &t1_score_rect,
             &self.brushes.white,
         );
 
-        if score.team2.overs > 0.0 && overs_bottom > overs_top + 8.0 {
-            let overs_str = format!("({:.1} ov)", score.team2.overs);
-            self.formats.overs.text(
-                &self.rt,
-                &overs_str,
-                &D2D_RECT_F {
-                    left: half + 26.0,
-                    top: overs_top,
-                    right: w - 26.0,
-                    bottom: overs_bottom,
-                },
-                &self.brushes.dim,
-            );
+        let t1_name_rect = D2D_RECT_F {
+            left: 14.0,
+            top: 28.0,
+            right: t1_score_rect.left - 8.0,
+            bottom: 48.0,
+        };
+        self.formats.team_name.text(
+            &self.rt,
+            &ui_text(&t1_name_raw, 24),
+            &t1_name_rect,
+            &self.brushes.white,
+        );
+        if t1_batting {
+            let dot_x = 14.0
+                + (t1_name_raw.chars().count() as f32 * 8.2).min(t1_name_rect.right - 20.0)
+                + 8.0;
+            let dot = D2D1_ELLIPSE {
+                point: D2D_POINT_2F { x: dot_x, y: 38.0 },
+                radiusX: 3.0,
+                radiusY: 3.0,
+            };
+            self.rt.FillEllipse(&dot, &self.brushes.gold_accent);
         }
 
-        if show_stats {
-            let info_rect = D2D_RECT_F {
-                left: 20.0,
-                top: h - 48.0,
-                right: w - 20.0,
-                bottom: h - 14.0,
-            };
-            let info_rr = D2D1_ROUNDED_RECT {
-                rect: info_rect,
-                radiusX: 8.0,
-                radiusY: 8.0,
-            };
-            self.rt
-                .FillRoundedRectangle(&info_rr, &self.brushes.card_surface);
+        // Row 2: Team 2 (y: 50.0 to 70.0)
+        let t2_batting = score.batting_team == BATTING_TEAM2 || score.team2.is_batting;
+        let t2_name_raw = cricket_team_label(&score.team2.name, &score.team2.abbreviation, "T2");
+        let t2_score_str = clean_score_string(&score.team2.score, SportType::Cricket);
 
-            // Reused scratch: clear keeps capacity (max 4 short parts, bounded).
+        let t2_score_rect = D2D_RECT_F {
+            left: w * 0.45,
+            top: 50.0,
+            right: w - 14.0,
+            bottom: 70.0,
+        };
+        self.formats.score_large.text(
+            &self.rt,
+            &ui_text(&t2_score_str, 24),
+            &t2_score_rect,
+            &self.brushes.white,
+        );
+
+        let t2_name_rect = D2D_RECT_F {
+            left: 14.0,
+            top: 50.0,
+            right: t2_score_rect.left - 8.0,
+            bottom: 70.0,
+        };
+        self.formats.team_name.text(
+            &self.rt,
+            &ui_text(&t2_name_raw, 24),
+            &t2_name_rect,
+            &self.brushes.white,
+        );
+        if t2_batting {
+            let dot_x = 14.0
+                + (t2_name_raw.chars().count() as f32 * 8.2).min(t2_name_rect.right - 20.0)
+                + 8.0;
+            let dot = D2D1_ELLIPSE {
+                point: D2D_POINT_2F { x: dot_x, y: 60.0 },
+                radiusX: 3.0,
+                radiusY: 3.0,
+            };
+            self.rt.FillEllipse(&dot, &self.brushes.gold_accent);
+        }
+
+        // 3. Stats Bar (y: 74.0 to 104.0)
+        if show_stats && h >= 95.0 {
+            // Divider line
+            self.rt.DrawLine(
+                D2D_POINT_2F { x: 14.0, y: 74.0 },
+                D2D_POINT_2F {
+                    x: w - 14.0,
+                    y: 74.0,
+                },
+                &self.brushes.border,
+                1.0,
+                None,
+            );
+
+            // Left stats: CRR / RRR / Need
             self.info_parts_scratch.clear();
             self.info_parts_scratch
-                .push(format!("CRR: {:.2}", score.crr));
+                .push(format!("CRR {:.2}", score.crr));
             if let Some(rrr) = score.rrr {
-                self.info_parts_scratch.push(format!("RRR: {:.2}", rrr));
+                self.info_parts_scratch.push(format!("RRR {:.2}", rrr));
             }
             if let Some(needed) = score.runs_needed {
-                let chasing_abbr = if score.batting_team == BATTING_TEAM1 {
-                    if score.team1.abbreviation.is_empty() {
-                        &score.team1.name
-                    } else {
-                        &score.team1.abbreviation
-                    }
-                } else if score.team2.abbreviation.is_empty() {
-                    &score.team2.name
-                } else {
-                    &score.team2.abbreviation
-                };
-                self.info_parts_scratch
-                    .push(format!("{chasing_abbr} need {needed}"));
+                self.info_parts_scratch.push(format!("Need {needed}"));
             }
-            if let Some(target) = score.target {
-                self.info_parts_scratch.push(format!("Target: {target}"));
-            }
+            let left_text = self.info_parts_scratch.join(" · ");
 
-            let info_str = self.info_parts_scratch.join("   ·   ");
-            self.formats
-                .info
-                .text(&self.rt, &info_str, &info_rect, &self.brushes.dim);
+            let target_w = if score.target.is_some() { 64.0 } else { 0.0 };
+            let left_rect = D2D_RECT_F {
+                left: 14.0,
+                top: 76.0,
+                right: w - 14.0 - target_w,
+                bottom: h - 4.0,
+            };
+            self.formats.info.text(
+                &self.rt,
+                &ui_text(&left_text, 48),
+                &left_rect,
+                &self.brushes.dim,
+            );
+
+            // Right stat: TGT
+            if let Some(tgt) = score.target {
+                let tgt_str = format!("TGT {tgt}");
+                let tgt_rect = D2D_RECT_F {
+                    left: w - 14.0 - target_w,
+                    top: 76.0,
+                    right: w - 14.0,
+                    bottom: h - 4.0,
+                };
+                self.formats
+                    .overs_right
+                    .text(&self.rt, &tgt_str, &tgt_rect, &self.brushes.dim);
+            }
         }
     }
 
     unsafe fn render_soccer(&self, w: f32, h: f32, score: &MatchScore) {
-        let header_top = if h <= 110.0 { 8.0 } else { 14.0 };
-        let header_bottom = header_top + 26.0;
+        // Horizontal Broadcast TV Bar (340 x 40)
+        let cx = w / 2.0;
+        let cy = h / 2.0;
 
-        let title = display_match_title(score);
-        let badge_left = self.render_status_badge(w, header_top, score);
-        let title_rect = D2D_RECT_F {
-            left: 26.0,
-            top: header_top,
-            right: badge_left - 10.0,
-            bottom: header_bottom,
+        // 1. Center Clock Pill
+        let clock_str = soccer_clock(score).unwrap_or("-");
+        let pill_w = 44.0;
+        let pill_h = 20.0;
+        let pill_rect = D2D_RECT_F {
+            left: cx - pill_w / 2.0,
+            top: cy - pill_h / 2.0,
+            right: cx + pill_w / 2.0,
+            bottom: cy + pill_h / 2.0,
         };
-        self.formats.title.text(
-            &self.rt,
-            &ui_text(&title, 64),
-            &title_rect,
-            &self.brushes.dim,
-        );
+        let pill_rr = D2D1_ROUNDED_RECT {
+            rect: pill_rect,
+            radiusX: 4.0,
+            radiusY: 4.0,
+        };
+        self.rt
+            .FillRoundedRectangle(&pill_rr, &self.brushes.red_badge_bg);
+        self.formats
+            .badge
+            .text(&self.rt, clock_str, &pill_rect, &self.brushes.red_accent);
 
-        let row_top = header_bottom + 2.0;
-        let row_bottom = h - 8.0;
-        let half = w / 2.0;
+        // 2. Scores
+        let t1_score = clean_score_string(&score.team1.score, SportType::Soccer);
+        let t2_score = clean_score_string(&score.team2.score, SportType::Soccer);
 
+        let s1_rect = D2D_RECT_F {
+            left: cx - pill_w / 2.0 - 34.0,
+            top: 0.0,
+            right: cx - pill_w / 2.0 - 4.0,
+            bottom: h,
+        };
+        self.formats
+            .score_center
+            .text(&self.rt, &t1_score, &s1_rect, &self.brushes.white);
+
+        let s2_rect = D2D_RECT_F {
+            left: cx + pill_w / 2.0 + 4.0,
+            top: 0.0,
+            right: cx + pill_w / 2.0 + 34.0,
+            bottom: h,
+        };
+        self.formats
+            .score_center
+            .text(&self.rt, &t2_score, &s2_rect, &self.brushes.white);
+
+        // 3. Team Names
         let t1_name = football_short_name(&score.team1.name, &score.team1.abbreviation, "T1");
         let t2_name = football_short_name(&score.team2.name, &score.team2.abbreviation, "T2");
 
-        self.formats.team_name.text(
-            &self.rt,
-            &ui_text(&t1_name, 16),
-            &D2D_RECT_F {
-                left: 26.0,
-                top: row_top,
-                right: half - 88.0,
-                bottom: row_bottom,
-            },
-            &self.brushes.white,
-        );
+        let t1_rect = D2D_RECT_F {
+            left: 14.0,
+            top: 0.0,
+            right: s1_rect.left - 6.0,
+            bottom: h,
+        };
         self.formats.team_name_right.text(
             &self.rt,
-            &ui_text(&t2_name, 16),
-            &D2D_RECT_F {
-                left: half + 88.0,
-                top: row_top,
-                right: w - 26.0,
-                bottom: row_bottom,
-            },
-            &self.brushes.white,
+            &ui_text(&t1_name, 12),
+            &t1_rect,
+            &self.brushes.dim,
         );
 
-        let t1_score = clean_score_string(&score.team1.score, SportType::Soccer);
-        let t2_score = clean_score_string(&score.team2.score, SportType::Soccer);
-        let score_pair = format!("{t1_score}  —  {t2_score}");
-        self.formats.score_center.text(
+        let t2_rect = D2D_RECT_F {
+            left: s2_rect.right + 6.0,
+            top: 0.0,
+            right: w - 14.0,
+            bottom: h,
+        };
+        self.formats.team_name.text(
             &self.rt,
-            &ui_text(&score_pair, 24),
-            &D2D_RECT_F {
-                left: half - 90.0,
-                top: row_top,
-                right: half + 90.0,
-                bottom: row_bottom,
-            },
-            &self.brushes.white,
+            &ui_text(&t2_name, 12),
+            &t2_rect,
+            &self.brushes.dim,
         );
     }
 
     unsafe fn render_no_match(&self, w: f32, h: f32) {
-        let compact = h <= 120.0;
-        self.formats.title.text(
-            &self.rt,
-            "SportsPulse",
-            &D2D_RECT_F {
-                left: 26.0,
-                top: if compact { 8.0 } else { 16.0 },
-                right: w - 26.0,
-                bottom: if compact { 30.0 } else { 42.0 },
-            },
-            &self.brushes.subtle,
-        );
+        // Centered emoji 22px + "No match tracked" 11px
+        let icon_h = 26.0;
+        let text_h = 16.0;
+        let gap = 6.0;
+        let total_h = icon_h + gap + text_h;
+        let start_y = (h - total_h) / 2.0;
 
-        let msg_top = if compact { 32.0 } else { h * 0.38 };
-        let msg_bottom = if compact {
-            h - 8.0
-        } else {
-            (h * 0.38 + 48.0).min(h - 12.0)
+        let icon_rect = D2D_RECT_F {
+            left: 0.0,
+            top: start_y,
+            right: w,
+            bottom: start_y + icon_h,
         };
-        let title_fmt = if compact {
-            &self.formats.no_match_sub
-        } else {
-            &self.formats.no_match_title
+        self.formats
+            .no_match_icon
+            .text(&self.rt, "🏏 ⚽", &icon_rect, &self.brushes.white);
+
+        let text_rect = D2D_RECT_F {
+            left: 0.0,
+            top: start_y + icon_h + gap,
+            right: w,
+            bottom: start_y + total_h,
         };
-        title_fmt.text(
+        self.formats.no_match_title.text(
             &self.rt,
             "No match tracked",
-            &D2D_RECT_F {
-                left: 26.0,
-                top: msg_top,
-                right: w - 26.0,
-                bottom: msg_bottom,
-            },
-            &self.brushes.white,
+            &text_rect,
+            &self.brushes.dim,
         );
     }
 
@@ -1163,90 +1185,48 @@ impl Renderer {
     unsafe fn render_status_badge(&self, w: f32, top: f32, score: &MatchScore) -> f32 {
         let (text, bg_brush, fg_brush) = if is_live_stale(score) {
             (
-                "RECONNECTING".to_string(),
+                "RECONNECTING",
                 &self.brushes.amber_badge_bg,
                 &self.brushes.amber_accent,
             )
         } else {
             match score.status {
-                MatchStatus::Live => {
-                    let text = if score.sport == SportType::Soccer {
-                        if let Some(clock) = soccer_clock(score) {
-                            format!("LIVE · {clock}")
-                        } else {
-                            "LIVE".to_string()
-                        }
-                    } else {
-                        "LIVE".to_string()
-                    };
-                    if score.sport == SportType::Soccer {
-                        (text, &self.brushes.red_badge_bg, &self.brushes.red_accent)
-                    } else {
-                        (
-                            text,
-                            &self.brushes.green_badge_bg,
-                            &self.brushes.green_accent,
-                        )
-                    }
-                }
-                MatchStatus::Break => {
-                    let text = if score.sport == SportType::Soccer {
-                        "HT"
-                    } else {
-                        "BREAK"
-                    };
-                    (
-                        text.to_string(),
-                        &self.brushes.amber_badge_bg,
-                        &self.brushes.amber_accent,
-                    )
-                }
+                MatchStatus::Live => ("LIVE", &self.brushes.red_badge_bg, &self.brushes.red_accent),
+                MatchStatus::Break => (
+                    "BREAK",
+                    &self.brushes.amber_badge_bg,
+                    &self.brushes.amber_accent,
+                ),
                 MatchStatus::Scheduled => (
-                    "UPCOMING".to_string(),
+                    "UPCOMING",
                     &self.brushes.blue_badge_bg,
                     &self.brushes.blue_accent,
                 ),
                 MatchStatus::Completed => {
-                    let text = if score.sport == SportType::Soccer
-                        && soccer_clock(score).is_some_and(|c| c.eq_ignore_ascii_case("FT"))
-                    {
-                        "FT"
-                    } else {
-                        "FINISHED"
-                    };
-                    // Distinct from Live green AND Scheduled blue: neutral gray
-                    // surface + white text (Offline stays dim/subtle).
-                    (
-                        text.to_string(),
-                        &self.brushes.card_surface,
-                        &self.brushes.white,
-                    )
+                    ("FINISHED", &self.brushes.card_surface, &self.brushes.dim)
                 }
-                MatchStatus::NoMatch => (
-                    "OFFLINE".to_string(),
-                    &self.brushes.card_surface,
-                    &self.brushes.subtle,
-                ),
+                MatchStatus::NoMatch => {
+                    ("OFFLINE", &self.brushes.card_surface, &self.brushes.subtle)
+                }
             }
         };
 
-        let char_w = 8.4;
-        let bw = (text.chars().count() as f32 * char_w + 20.0).clamp(72.0, 168.0);
+        let bw = (text.chars().count() as f32 * 6.5 + 14.0).clamp(38.0, 72.0);
         let badge_rect = D2D_RECT_F {
-            left: w - 16.0 - bw,
+            left: w - 14.0 - bw,
             top,
-            right: w - 16.0,
-            bottom: top + 26.0,
+            right: w - 14.0,
+            bottom: top + 16.0,
         };
         let badge_rr = D2D1_ROUNDED_RECT {
             rect: badge_rect,
-            radiusX: 8.0,
-            radiusY: 8.0,
+            radiusX: 4.0,
+            radiusY: 4.0,
         };
         self.rt.FillRoundedRectangle(&badge_rr, bg_brush);
         self.formats
             .badge
-            .text(&self.rt, &text, &badge_rect, fg_brush);
+            .text(&self.rt, text, &badge_rect, fg_brush);
         badge_rect.left
     }
 
@@ -1268,12 +1248,13 @@ impl Renderer {
             right: w,
             bottom: h,
         };
+        let flash_radius = if h <= 45.0 { 8.0 } else { 10.0 };
         let border_rr = D2D1_ROUNDED_RECT {
             rect: border,
-            radiusX: 16.0,
-            radiusY: 16.0,
+            radiusX: flash_radius,
+            radiusY: flash_radius,
         };
-        self.rt.DrawRoundedRectangle(&border_rr, fg, 2.2, None);
+        self.rt.DrawRoundedRectangle(&border_rr, fg, 2.0, None);
 
         let banner_h = if h <= 110.0 { 26.0 } else { 32.0 };
         let banner = D2D_RECT_F {
@@ -1319,15 +1300,10 @@ impl Renderer {
     unsafe fn flush_to_layered_window(&mut self, pos: &POINT) -> Result<()> {
         let row_pitch = self.w as usize * 4;
         let total_bytes = row_pitch * self.h as usize;
-        // Persistent buffer: clear + resize instead of a per-frame alloc.
-        // CopyPixels fully overwrites it; a stride mismatch surfaces as Err below.
         debug_assert_eq!(row_pitch, self.w as usize * 4);
-        self.buf.clear();
-        self.buf.resize(total_bytes, 0);
+        let dib_slice = std::slice::from_raw_parts_mut(self.bits as *mut u8, total_bytes);
         self.wic
-            .CopyPixels(std::ptr::null(), row_pitch as u32, &mut self.buf)?;
-        debug_assert_eq!(self.buf.len(), total_bytes);
-        std::ptr::copy_nonoverlapping(self.buf.as_ptr(), self.bits as *mut u8, self.buf.len());
+            .CopyPixels(std::ptr::null(), row_pitch as u32, dib_slice)?;
 
         let size = SIZE {
             cx: self.w,

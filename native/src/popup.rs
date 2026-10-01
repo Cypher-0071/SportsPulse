@@ -567,15 +567,10 @@ impl PopupRenderer {
 
         let row_pitch = (self.w * 4) as usize;
         let total_bytes = row_pitch * self.h as usize;
-        // Persistent buffer: clear + resize instead of a per-present alloc.
-        // CopyPixels fully overwrites it; a stride mismatch surfaces as Err below.
         debug_assert_eq!(row_pitch, self.w as usize * 4);
-        self.buf.clear();
-        self.buf.resize(total_bytes, 0);
+        let dib_slice = std::slice::from_raw_parts_mut(self.bits as *mut u8, total_bytes);
         self.wic
-            .CopyPixels(std::ptr::null(), row_pitch as u32, &mut self.buf)?;
-        debug_assert_eq!(self.buf.len(), total_bytes);
-        std::ptr::copy_nonoverlapping(self.buf.as_ptr(), self.bits as *mut u8, self.buf.len());
+            .CopyPixels(std::ptr::null(), row_pitch as u32, dib_slice)?;
 
         let size = SIZE {
             cx: self.w,

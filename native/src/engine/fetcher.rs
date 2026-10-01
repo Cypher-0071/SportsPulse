@@ -12,7 +12,7 @@ use super::parser::{
     parse_soccer_latest_event, parse_soccer_match_detail, parse_soccer_matches,
 };
 
-const MAX_BODY_BYTES: usize = 1_000_000;
+const MAX_BODY_BYTES: usize = 10_000_000;
 
 /// Consecutive *scoreboard* polls (60s cadence) a selection may be absent
 /// before it counts as aged out. P0-1: this is deliberately a scoreboard
@@ -52,11 +52,11 @@ fn should_evict_selection(missing_cycles: u32) -> bool {
     missing_cycles >= MAX_MISSING_SELECTION_CYCLES
 }
 
-/// P1-2 outage guard: true when at least one of the 4 scoreboard GETs
+/// P1-2 outage guard: true when at least one of the scoreboard GETs
 /// returned usable JSON. All-failed means "no fresh data" — the caller
 /// must keep the previous list and emit no event.
-fn any_scoreboard_fetch_ok(flags: [bool; 4]) -> bool {
-    flags.iter().any(|&ok| ok)
+fn any_scoreboard_fetch_ok<T: AsRef<[bool]>>(flags: T) -> bool {
+    flags.as_ref().iter().any(|&ok| ok)
 }
 
 fn capped_backoff(failures: u32) -> Duration {
@@ -176,32 +176,86 @@ pub async fn start_polling(
             last_scoreboard_fetch.map_or(true, |t| t.elapsed() >= Duration::from_secs(60));
         if should_fetch_scoreboard {
             let mut discovered_matches: Vec<DiscoveredMatch> = Vec::new();
-            let today_str = chrono::Utc::now().format("%Y%m%d").to_string();
+            let now = chrono::Utc::now();
+            let today_str = now.format("%Y%m%d").to_string();
+            let next_month_date = now + chrono::Duration::days(20);
+            let next_month_str = next_month_date.format("%Y%m").to_string();
 
             let cricket_default_url = "https://site.web.api.espn.com/apis/personalized/v2/scoreboard/header?sport=cricket&region=in";
             let cricket_today_url = format!("https://site.web.api.espn.com/apis/personalized/v2/scoreboard/header?sport=cricket&region=in&dates={}", today_str);
-            let soccer_default_url = "https://site.web.api.espn.com/apis/personalized/v2/scoreboard/header?sport=soccer&region=in";
-            let soccer_today_url = format!("https://site.web.api.espn.com/apis/personalized/v2/scoreboard/header?sport=soccer&region=in&dates={}", today_str);
+            let soccer_global_url =
+                "https://site.web.api.espn.com/apis/personalized/v2/scoreboard/header?sport=soccer";
 
-            // P1-3: the 4 scoreboard GETs run concurrently. Sequential
-            // 4x10s timeouts stalled the loop up to 40s; `join!` caps the
-            // worst case at ~10s. Shared `&client` borrows are safe:
-            // `Client` is internally Arc'd and every future is read-only.
-            let (cricket_default_json, cricket_today_json, soccer_default_json, soccer_today_json) = tokio::join!(
-                fetch_json_capped(&client, cricket_default_url),
-                fetch_json_capped(&client, &cricket_today_url),
-                fetch_json_capped(&client, soccer_default_url),
-                fetch_json_capped(&client, &soccer_today_url)
+            let eng_next_url = format!(
+                "https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard?dates={}",
+                next_month_str
+            );
+            let esp_next_url = format!(
+                "https://site.api.espn.com/apis/site/v2/sports/soccer/esp.1/scoreboard?dates={}",
+                next_month_str
+            );
+            let ita_next_url = format!(
+                "https://site.api.espn.com/apis/site/v2/sports/soccer/ita.1/scoreboard?dates={}",
+                next_month_str
+            );
+            let ger_next_url = format!(
+                "https://site.api.espn.com/apis/site/v2/sports/soccer/ger.1/scoreboard?dates={}",
+                next_month_str
             );
 
-            // P1-2: total-outage guard. All 4 failed means no fresh data:
+            let (
+                cricket_default_json,
+                cricket_today_json,
+                soccer_global_json,
+                ucl_json,
+                uel_json,
+                isl_json,
+                eng_json,
+                esp_json,
+                ita_json,
+                ger_json,
+                fra_json,
+                eng_next_json,
+                esp_next_json,
+                ita_next_json,
+                ger_next_json,
+            ) = tokio::join!(
+                fetch_json_capped(&client, cricket_default_url),
+                fetch_json_capped(&client, &cricket_today_url),
+                fetch_json_capped(&client, soccer_global_url),
+                fetch_json_capped(&client, "https://site.api.espn.com/apis/site/v2/sports/soccer/uefa.champions/scoreboard"),
+                fetch_json_capped(&client, "https://site.api.espn.com/apis/site/v2/sports/soccer/uefa.europa/scoreboard"),
+                fetch_json_capped(&client, "https://site.api.espn.com/apis/site/v2/sports/soccer/ind.1/scoreboard"),
+                fetch_json_capped(&client, "https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard"),
+                fetch_json_capped(&client, "https://site.api.espn.com/apis/site/v2/sports/soccer/esp.1/scoreboard"),
+                fetch_json_capped(&client, "https://site.api.espn.com/apis/site/v2/sports/soccer/ita.1/scoreboard"),
+                fetch_json_capped(&client, "https://site.api.espn.com/apis/site/v2/sports/soccer/ger.1/scoreboard"),
+                fetch_json_capped(&client, "https://site.api.espn.com/apis/site/v2/sports/soccer/fra.1/scoreboard"),
+                fetch_json_capped(&client, &eng_next_url),
+                fetch_json_capped(&client, &esp_next_url),
+                fetch_json_capped(&client, &ita_next_url),
+                fetch_json_capped(&client, &ger_next_url)
+            );
+
+            // P1-2: total-outage guard. All failed means no fresh data:
             // keep the previous list and emit nothing so the dashboard
             // never flickers to empty.
             let scoreboard_ok = any_scoreboard_fetch_ok([
                 cricket_default_json.is_some(),
                 cricket_today_json.is_some(),
-                soccer_default_json.is_some(),
-                soccer_today_json.is_some(),
+                soccer_global_json.is_some(),
+                ucl_json.is_some(),
+                uel_json.is_some(),
+                isl_json.is_some(),
+                eng_json.is_some(),
+                esp_json.is_some(),
+                ita_json.is_some(),
+                ger_json.is_some(),
+                fra_json.is_some(),
+                eng_next_json.is_some(),
+                esp_next_json.is_some(),
+                ita_next_json.is_some(),
+                ger_next_json.is_some(),
             ]);
             if !scoreboard_ok {
                 #[cfg(debug_assertions)]
@@ -235,11 +289,26 @@ pub async fn start_polling(
 
                 // 2. Soccer Scoreboards
                 let mut soccer_matches = Vec::new();
-                if let Some(json) = soccer_default_json.as_ref() {
+                if let Some(json) = soccer_global_json.as_ref() {
                     soccer_matches.extend(parse_soccer_matches(json));
                 }
-                if let Some(json) = soccer_today_json.as_ref() {
-                    soccer_matches.extend(parse_soccer_matches(json));
+                for json_opt in [
+                    &ucl_json,
+                    &uel_json,
+                    &isl_json,
+                    &eng_json,
+                    &esp_json,
+                    &ita_json,
+                    &ger_json,
+                    &fra_json,
+                    &eng_next_json,
+                    &esp_next_json,
+                    &ita_next_json,
+                    &ger_next_json,
+                ] {
+                    if let Some(json) = json_opt.as_ref() {
+                        soccer_matches.extend(parse_soccer_matches(json));
+                    }
                 }
 
                 soccer_matches.sort_by(|a, b| a.1.cmp(&b.1));
@@ -648,5 +717,31 @@ mod tests {
         assert!(any_scoreboard_fetch_ok([false, false, true, false]));
         assert!(any_scoreboard_fetch_ok([false, false, false, true]));
         assert!(any_scoreboard_fetch_ok([true, true, true, true]));
+    }
+
+    #[tokio::test]
+    async fn test_live_espn_soccer_fetch() {
+        let client = Client::builder()
+            .tcp_nodelay(true)
+            .timeout(Duration::from_secs(10))
+            .connect_timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let url =
+            "https://site.web.api.espn.com/apis/personalized/v2/scoreboard/header?sport=soccer";
+        let res = fetch_json_capped(&client, url).await;
+        assert!(res.is_some(), "fetch_json_capped returned None");
+        let matches = parse_soccer_matches(&res.unwrap());
+        println!("PARSED_SOCCER_COUNT: {}", matches.len());
+        for m in matches.iter().take(5) {
+            println!(
+                "SAMPLE_SOCCER: series={} id={} title='{}' status={} league='{}' start='{}'",
+                m.0, m.1, m.2, m.3, m.4, m.5
+            );
+        }
+        assert!(
+            !matches.is_empty(),
+            "parse_soccer_matches returned empty vec"
+        );
     }
 }
