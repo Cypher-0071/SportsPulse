@@ -33,12 +33,15 @@ required-features = ["dev-bins"]
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"
 
+[target.'cfg(not(windows))'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
 [target.'cfg(windows)'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "default-tls"] }
 windows = { version = "0.58", features = [
     "Foundation_Numerics",
     "Win32_Foundation",
@@ -67,4 +70,5 @@ lto = true
 strip = true
 
 [lints.clippy]
-all = "warn"
+all = { level = "warn", priority = -1 }
+missing_safety_doc = "allow"

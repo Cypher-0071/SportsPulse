@@ -327,7 +327,7 @@ fn main() {
         };
 
         let mut dash_renderer =
-            match DashboardRenderer::new(dash_hwnd, DASH_NORMAL_W, DASH_NORMAL_H) {
+            match DashboardRenderer::new(dash_hwnd, DASH_NORMAL_W, DASH_NORMAL_H, 96) {
                 Ok(r) => r,
                 Err(_) => fatal_bench("spbench: dashboard renderer init failed"),
             };

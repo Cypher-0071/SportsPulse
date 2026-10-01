@@ -799,71 +799,131 @@ pub fn parse_soccer_matches(
     value: &serde_json::Value,
 ) -> Vec<(String, String, String, String, String, String)> {
     let mut matches = Vec::new();
+
+    let parse_event = |event: &serde_json::Value,
+                       series_id: &str,
+                       league_name: &str|
+     -> Option<(String, String, String, String, String, String)> {
+        let match_id = event.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        if match_id.is_empty() {
+            return None;
+        }
+
+        // Support string status ("in", "pre"), status object ({ "type": { "state": "in" } }),
+        // and fullStatus object ({ "type": { "state": "in" } }).
+        let status_raw = if let Some(s) = event.get("status").and_then(|v| v.as_str()) {
+            s.to_string()
+        } else if let Some(s) = event
+            .get("status")
+            .and_then(|st| st.get("type"))
+            .and_then(|t| t.get("state"))
+            .and_then(|v| v.as_str())
+        {
+            s.to_string()
+        } else if let Some(s) = event
+            .get("fullStatus")
+            .and_then(|st| st.get("type"))
+            .and_then(|t| t.get("state"))
+            .and_then(|v| v.as_str())
+        {
+            s.to_string()
+        } else {
+            String::new()
+        };
+
+        let status_lower = status_raw.trim().to_ascii_lowercase();
+        let is_live = status_lower == "in"
+            || status_lower.contains("live")
+            || status_lower.contains("progress");
+        let is_pre = status_lower == "pre" || status_lower.contains("sched");
+        if !is_live && !is_pre {
+            return None;
+        }
+        let canonical_status = if is_live { "in" } else { "pre" };
+
+        let name = event
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Football Match");
+        let mut match_name = name.to_string();
+
+        let competitors = event
+            .get("competitors")
+            .and_then(|v| v.as_array())
+            .or_else(|| {
+                event
+                    .get("competitions")
+                    .and_then(|c| c.as_array())
+                    .and_then(|a| a.first())
+                    .and_then(|c| c.get("competitors"))
+                    .and_then(|v| v.as_array())
+            });
+
+        if let Some(comps) = competitors {
+            if comps.len() >= 2 {
+                fn extract_team_name(c: &serde_json::Value) -> &str {
+                    c.get("displayName")
+                        .or_else(|| c.get("name"))
+                        .or_else(|| c.get("team").and_then(|t| t.get("displayName")))
+                        .or_else(|| c.get("team").and_then(|t| t.get("name")))
+                        .or_else(|| c.get("shortDisplayName"))
+                        .or_else(|| c.get("abbreviation"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                }
+                let team1 = extract_team_name(&comps[0]);
+                let team2 = extract_team_name(&comps[1]);
+                if !team1.is_empty() && !team2.is_empty() {
+                    match_name = format!("{} vs {}", team1, team2);
+                }
+            }
+        }
+
+        let start_time = event
+            .get("date")
+            .or_else(|| {
+                event
+                    .get("competitions")
+                    .and_then(|c| c.as_array())
+                    .and_then(|a| a.first())
+                    .and_then(|c| c.get("date"))
+            })
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        Some((
+            series_id.to_string(),
+            match_id.to_string(),
+            match_name,
+            canonical_status.to_string(),
+            league_name.to_string(),
+            start_time,
+        ))
+    };
+
     if let Some(sports) = value.get("sports").and_then(|v| v.as_array()) {
         for sport in sports {
-            if sport.get("slug").and_then(|v| v.as_str()) == Some("soccer") {
+            let slug = sport.get("slug").and_then(|v| v.as_str()).unwrap_or("");
+            if slug.eq_ignore_ascii_case("soccer") || slug.eq_ignore_ascii_case("football") {
                 if let Some(leagues) = sport.get("leagues").and_then(|v| v.as_array()) {
                     for league in leagues {
                         let series_slug = league.get("slug").and_then(|v| v.as_str()).unwrap_or("");
                         let series_id = if series_slug.is_empty() {
-                            league
-                                .get("id")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string()
+                            league.get("id").and_then(|v| v.as_str()).unwrap_or("")
                         } else {
-                            series_slug.to_string()
+                            series_slug
                         };
                         let league_name = league
                             .get("name")
+                            .or_else(|| league.get("shortName"))
                             .and_then(|v| v.as_str())
-                            .unwrap_or("Football")
-                            .to_string();
+                            .unwrap_or("Football");
 
                         if let Some(events) = league.get("events").and_then(|v| v.as_array()) {
                             for event in events {
-                                let match_id =
-                                    event.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                                let name = event
-                                    .get("name")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("Football Match");
-
-                                // The scoreboard header has "status" inside event.status
-                                // Wait, let's look at event.get("status")
-                                let status =
-                                    event.get("status").and_then(|v| v.as_str()).unwrap_or("");
-
-                                if status == "in" || status == "pre" {
-                                    let mut match_name = name.to_string();
-                                    if let Some(competitors) =
-                                        event.get("competitors").and_then(|v| v.as_array())
-                                    {
-                                        if competitors.len() >= 2 {
-                                            let team1 = competitors[0]
-                                                .get("displayName")
-                                                .and_then(|v| v.as_str())
-                                                .unwrap_or("T1");
-                                            let team2 = competitors[1]
-                                                .get("displayName")
-                                                .and_then(|v| v.as_str())
-                                                .unwrap_or("T2");
-                                            match_name = format!("{} vs {}", team1, team2);
-                                        }
-                                    }
-                                    let start_time = event
-                                        .get("date")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string();
-                                    matches.push((
-                                        series_id.clone(),
-                                        match_id.to_string(),
-                                        match_name,
-                                        status.to_string(),
-                                        league_name.clone(),
-                                        start_time,
-                                    ));
+                                if let Some(m) = parse_event(event, series_id, league_name) {
+                                    matches.push(m);
                                 }
                             }
                         }
@@ -871,7 +931,29 @@ pub fn parse_soccer_matches(
                 }
             }
         }
+    } else if let Some(events) = value.get("events").and_then(|v| v.as_array()) {
+        let series_id = value
+            .get("leagues")
+            .and_then(|l| l.as_array())
+            .and_then(|a| a.first())
+            .and_then(|l| l.get("slug").or_else(|| l.get("id")))
+            .and_then(|v| v.as_str())
+            .unwrap_or("soccer");
+        let league_name = value
+            .get("leagues")
+            .and_then(|l| l.as_array())
+            .and_then(|a| a.first())
+            .and_then(|l| l.get("name").or_else(|| l.get("shortName")))
+            .and_then(|v| v.as_str())
+            .unwrap_or("Football");
+
+        for event in events {
+            if let Some(m) = parse_event(event, series_id, league_name) {
+                matches.push(m);
+            }
+        }
     }
+
     matches
 }
 
@@ -1916,6 +1998,64 @@ mod tests {
         assert_eq!(out[0].1, "700100");
         assert!(out[0].2.contains("Arsenal"));
         assert_eq!(out[1].1, "700101");
+    }
+
+    #[test]
+    fn test_parse_soccer_matches_object_status_and_top_level_events() {
+        // Test ESPN payload with object status and competitions.competitors nesting
+        let json = serde_json::json!({
+            "events": [
+                {
+                    "id": "800101",
+                    "status": {
+                        "type": {
+                            "state": "in",
+                            "name": "STATUS_IN_PROGRESS"
+                        }
+                    },
+                    "competitions": [
+                        {
+                            "competitors": [
+                                { "displayName": "Real Madrid" },
+                                { "displayName": "Barcelona" }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "id": "800102",
+                    "fullStatus": {
+                        "type": {
+                            "state": "pre",
+                            "name": "STATUS_SCHEDULED"
+                        }
+                    },
+                    "competitions": [
+                        {
+                            "competitors": [
+                                { "displayName": "Bayern Munich" },
+                                { "displayName": "Dortmund" }
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "leagues": [
+                {
+                    "slug": "esp.1",
+                    "name": "La Liga"
+                }
+            ]
+        });
+        let out = parse_soccer_matches(&json);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].0, "esp.1");
+        assert_eq!(out[0].1, "800101");
+        assert_eq!(out[0].2, "Real Madrid vs Barcelona");
+        assert_eq!(out[0].3, "in");
+        assert_eq!(out[1].1, "800102");
+        assert_eq!(out[1].2, "Bayern Munich vs Dortmund");
+        assert_eq!(out[1].3, "pre");
     }
 
     #[test]
