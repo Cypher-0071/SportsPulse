@@ -47,13 +47,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::engine::models::{MatchEvent, MatchEventType};
 use crate::render::{
     d2d_factory, dwrite_factory, has_word, high_contrast, software_rt_props, ui_text, EVENT_TTL,
-    UI_SCALE, WIN_TTL,
+    WIN_TTL,
 };
 
-// Design size is 320×84 DIPs; the physical window is UI_SCALE of that and the
-// render-target DPI carries the same scale, so the interior layout is untouched.
-pub const POPUP_W: u32 = 224;
-pub const POPUP_H: u32 = 59;
+// Full-size event card; only the dashboard is scaled down (UI_SCALE does
+// not apply here).
+pub const POPUP_W: u32 = 320;
+pub const POPUP_H: u32 = 84;
 const POPUP_CLASS: PCWSTR = w!("SPNativeMiniPopup");
 const TIMER_AUTOHIDE_ID: usize = 1001;
 
@@ -211,7 +211,6 @@ impl PopupRenderer {
 
         let rt = factory.CreateWicBitmapRenderTarget(&wic, &software_rt_props())?;
         rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-        rt.SetDpi(96.0 * UI_SCALE, 96.0 * UI_SCALE);
 
         let screen_dc = GetWindowDC(None);
         if screen_dc.is_invalid() {
@@ -385,7 +384,6 @@ impl PopupRenderer {
         )?;
         let rt = factory.CreateWicBitmapRenderTarget(&wic, &software_rt_props())?;
         rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-        rt.SetDpi(96.0 * UI_SCALE, 96.0 * UI_SCALE);
 
         // Reuse mem_dc across rebuilds; recreate only if it was lost.
         if self.mem_dc.is_invalid() {
