@@ -568,6 +568,7 @@ unsafe fn apply_scrollbar_drag(state: &mut AppState, hwnd: HWND, y_dip: f32) {
         r.scroll_offset = scroll;
         r.target_scroll_offset = scroll;
         r.wheel_accum = 0.0;
+        r.scroll_active = true;
     }
     let _ = KillTimer(hwnd, DASH_SCROLL_TIMER);
     present_dashboard_hwnd(state, hwnd);
@@ -1279,17 +1280,20 @@ unsafe extern "system" fn dashboard_wnd_proc(
                             _ => (None, None, false, false, false, false, false),
                         };
 
+                    let scroll_h = matches!(hit, Some(HitTarget::Scrollbar));
                     let changed = r.hover_index != hover_idx
                         || r.action_hover_index != action_idx
                         || r.min_hover != min_h
                         || r.max_hover != max_h
                         || r.close_hover != close_h
                         || r.cricket_hover != cricket_h
-                        || r.football_hover != football_h;
+                        || r.football_hover != football_h
+                        || r.scroll_hover != scroll_h;
                     if changed {
                         r.set_hover(
                             hover_idx, action_idx, min_h, max_h, close_h, cricket_h, football_h,
                         );
+                        r.scroll_hover = scroll_h;
                     }
                     changed
                 } else {
@@ -1401,6 +1405,7 @@ unsafe extern "system" fn dashboard_wnd_proc(
                                     hover_idx, action_idx, min_h, max_h, close_h, cricket_h,
                                     football_h,
                                 );
+                                r.scroll_hover = matches!(hit, Some(HitTarget::Scrollbar));
                             }
                         }
                     }
@@ -1492,6 +1497,7 @@ unsafe extern "system" fn dashboard_wnd_proc(
                                     hover_idx, action_idx, min_h, max_h, close_h, cricket_h,
                                     football_h,
                                 );
+                                r.scroll_hover = matches!(hit, Some(HitTarget::Scrollbar));
                             }
                         }
                     }
@@ -1509,6 +1515,10 @@ unsafe extern "system" fn dashboard_wnd_proc(
                 if state.scrollbar_drag.is_some() {
                     state.scrollbar_drag = None;
                     let _ = ReleaseCapture();
+                    if let Some(r) = state.dash_renderer.as_mut() {
+                        r.scroll_active = false;
+                    }
+                    present_dashboard_hwnd(state, hwnd);
                     return LRESULT(0);
                 }
                 if state.title_drag_pending.is_some() {

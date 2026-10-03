@@ -264,6 +264,7 @@ struct Brushes {
     final_badge_bg: ID2D1SolidColorBrush,
     final_badge_text: ID2D1SolidColorBrush,
     close_btn_hover_bg: ID2D1SolidColorBrush,
+    tab_active_bg: ID2D1SolidColorBrush,
     spinner_track: ID2D1SolidColorBrush,
     spinner_accent: ID2D1SolidColorBrush,
 }
@@ -314,6 +315,9 @@ impl Brushes {
             final_badge_text: rt.CreateSolidColorBrush(&color(0.58, 0.58, 0.58, 1.0), None)?,
 
             close_btn_hover_bg: rt.CreateSolidColorBrush(&color(0.910, 0.067, 0.137, 1.0), None)?, // #E81123
+            // Solid segmented-control pill: clearly lifts the active sport tab
+            // off the #252525 switcher container (card_hover #222222 was invisible).
+            tab_active_bg: rt.CreateSolidColorBrush(&color(0.227, 0.227, 0.227, 1.0), None)?, // #3A3A3A
             spinner_track: rt.CreateSolidColorBrush(&color(1.0, 1.0, 1.0, 0.10), None)?,
             spinner_accent: rt.CreateSolidColorBrush(&color(0.353, 0.608, 0.835, 1.0), None)?, // #5A9BD5
         })
@@ -369,6 +373,11 @@ pub struct DashboardRenderer {
     content_height: f32,
     /// (global match index, card rect, exact 44px action-button rect).
     card_layout: Vec<(usize, D2D_RECT_F, D2D_RECT_F)>,
+    /// Scrollbar hover (cursor over track) and active (thumb being dragged)
+    /// states. Drive the thumb through subtle → dim → white so hover and
+    /// grab are unmistakable. Set from the main wnd_proc hover/drag paths.
+    pub scroll_hover: bool,
+    pub scroll_active: bool,
     /// Last-painted scrollbar geometry in design DIPs (None when content fits).
     /// Hit-testing and thumb-dragging read these; refreshed every present().
     pub scrollbar_track: Option<D2D_RECT_F>,
@@ -525,6 +534,8 @@ impl DashboardRenderer {
             active_sport: DashboardSport::Cricket,
             content_height: 0.0,
             card_layout: Vec::new(),
+            scroll_hover: false,
+            scroll_active: false,
             scrollbar_track: None,
             scrollbar_thumb: None,
             spinner_origin: Instant::now(),
@@ -1073,7 +1084,7 @@ impl DashboardRenderer {
                     radiusY: 6.0,
                 };
                 self.rt
-                    .FillRoundedRectangle(&tab_rr, &self.brushes.card_hover);
+                    .FillRoundedRectangle(&tab_rr, &self.brushes.tab_active_bg);
                 self.fmt_tab
                     .text(&self.rt, label, &rect, &self.brushes.white);
             } else if hovered {
@@ -1083,7 +1094,7 @@ impl DashboardRenderer {
                     radiusY: 6.0,
                 };
                 self.rt
-                    .FillRoundedRectangle(&tab_rr, &self.brushes.action_bg);
+                    .FillRoundedRectangle(&tab_rr, &self.brushes.action_hover_bg);
                 self.fmt_tab
                     .text(&self.rt, label, &rect, &self.brushes.white);
             } else {
@@ -1490,9 +1501,17 @@ impl DashboardRenderer {
                     radiusX: 2.5,
                     radiusY: 2.5,
                 };
+                // Thumb brightens on hover (dim) and while dragged (white).
+                let thumb_brush = if self.scroll_active {
+                    &self.brushes.white
+                } else if self.scroll_hover {
+                    &self.brushes.dim
+                } else {
+                    &self.brushes.subtle
+                };
                 self.rt
                     .FillRoundedRectangle(&track, &self.brushes.icon_box_bg);
-                self.rt.FillRoundedRectangle(&thumb, &self.brushes.subtle);
+                self.rt.FillRoundedRectangle(&thumb, thumb_brush);
             } else {
                 self.scrollbar_track = None;
                 self.scrollbar_thumb = None;
@@ -1587,6 +1606,7 @@ impl DashboardRenderer {
     /// Clear all hover state (called on WM_MOUSELEAVE).
     pub fn clear_hover(&mut self) {
         self.set_hover(None, None, false, false, false, false, false);
+        self.scroll_hover = false;
         self.mouse_tracking = false;
     }
 
