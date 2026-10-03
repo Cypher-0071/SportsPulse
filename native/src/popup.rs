@@ -6,6 +6,7 @@
 
 use std::cell::RefCell;
 use std::marker::PhantomData;
+use std::time::Instant;
 
 use windows::core::*;
 use windows::Win32::Foundation::{
@@ -39,23 +40,46 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, GetWindowLongPtrW, GetWindowRect, KillTimer, LoadCursorW,
     RegisterClassExW, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, UpdateLayeredWindow,
     CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HCURSOR, HMENU, HWND_TOPMOST, IDC_ARROW, SWP_NOACTIVATE,
-    SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, ULW_ALPHA, WM_CLOSE, WM_DESTROY, WM_KEYDOWN,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, ULW_ALPHA, WM_CLOSE, WM_DESTROY, WM_KEYDOWN,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_PAINT, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use crate::engine::models::{MatchEvent, MatchEventType};
 use crate::render::{
-    d2d_factory, dwrite_factory, has_word, high_contrast, software_rt_props, ui_text, EVENT_TTL,
-    WIN_TTL,
+    d2d_factory, dwrite_factory, has_word, high_contrast, reduced_motion, software_rt_props,
+    ui_text, EVENT_TTL, WIN_TTL,
 };
 
-// Full-size event card; only the dashboard is scaled down (UI_SCALE does
-// not apply here).
-pub const POPUP_W: u32 = 320;
-pub const POPUP_H: u32 = 84;
+// Live scorecard footprint in design DIPs (340x110): physical window and
+// render-target DPI scale with the monitor, so popup and scoreboard always
+// match pixel-for-pixel on the same display.
+pub const POPUP_W: u32 = 340;
+pub const POPUP_H: u32 = 110;
 const POPUP_CLASS: PCWSTR = w!("SPNativeMiniPopup");
 const TIMER_AUTOHIDE_ID: usize = 1001;
+/// Reveal/timeout-bar repaint tick (60fps while visible).
+const TIMER_ANIM_ID: usize = 1002;
+/// Reveal length (ms) and slide distance (physical px) for the ease-out
+/// entrance: the card rises from below its resting spot while fading in.
+const REVEAL_MS: f32 = 240.0;
+const REVEAL_LIFT_PX: f32 = 48.0;
+/// Animation repaint cadence (ms).
+const ANIM_MS: u32 = 16;
+
+/// Shared dismiss: stop every timer, hide, and park animation state so a
+/// later show_event starts clean. All dismiss paths (click, Esc, timeout,
+/// programmatic hide) funnel through here.
+unsafe fn dismiss_popup(hwnd: HWND) {
+    let _ = KillTimer(hwnd, TIMER_AUTOHIDE_ID);
+    let _ = KillTimer(hwnd, TIMER_ANIM_ID);
+    let _ = ShowWindow(hwnd, SW_HIDE);
+    let renderer_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut PopupRenderer;
+    if let Some(renderer) = renderer_ptr.as_mut() {
+        renderer.reveal_start = None;
+        renderer.shown_at = None;
+    }
+}
 
 #[inline]
 fn color(r: f32, g: f32, b: f32, a: f32) -> D2D1_COLOR_F {
@@ -168,6 +192,7 @@ pub struct PopupRenderer {
     bits: *mut core::ffi::c_void,
     w: i32,
     h: i32,
+    dpi: u32,
     bg_brush: ID2D1SolidColorBrush,
     border_brush: ID2D1SolidColorBrush,
     white_brush: ID2D1SolidColorBrush,
@@ -192,6 +217,13 @@ pub struct PopupRenderer {
     fmt_score: Fmt,
     // Last presented event, so WM_PAINT can re-present after RDP/UAC blanks.
     last_event: Option<MatchEvent>,
+    /// Reveal/timeout animation state. `target` is the resting screen pos;
+    /// `reveal_start` drives the 240ms ease-out slide+fade after show_event;
+    /// `shown_at`/`ttl_ms` drive the accent timeout bar. All cleared on hide.
+    pub target: POINT,
+    pub reveal_start: Option<Instant>,
+    pub shown_at: Option<Instant>,
+    pub ttl_ms: u32,
     // Persistent pixel scratch buffer: avoids a per-present alloc + double copy.
     buf: Vec<u8>,
     // STA-bound COM/GDI state must never cross threads.
@@ -199,7 +231,7 @@ pub struct PopupRenderer {
 }
 
 impl PopupRenderer {
-    pub unsafe fn new(hwnd: HWND, w: u32, h: u32) -> Result<Self> {
+    pub unsafe fn new(hwnd: HWND, w: u32, h: u32, dpi: u32) -> Result<Self> {
         // Shared process-lifetime factories (WIC stays per-renderer: fixed size, no resize).
         let factory = d2d_factory()?;
         let dwrite = dwrite_factory()?;
@@ -211,6 +243,11 @@ impl PopupRenderer {
 
         let rt = factory.CreateWicBitmapRenderTarget(&wic, &software_rt_props())?;
         rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+        // Design-DIP mapping: the physical bitmap reports POPUP_W/H DIPs so
+        // the interior layout renders at the monitor's DPI, exactly like the
+        // scoreboard overlay it stacks against.
+        let ddpi = if dpi == 0 { 96.0 } else { dpi as f32 };
+        rt.SetDpi(ddpi, ddpi);
 
         let screen_dc = GetWindowDC(None);
         if screen_dc.is_invalid() {
@@ -301,7 +338,7 @@ impl PopupRenderer {
             DWRITE_FONT_WEIGHT_BOLD,
             DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_STRETCH_NORMAL,
-            10.0,
+            14.0,
             w!("en-us"),
         )?;
         fmt_emoji_fmt.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
@@ -319,6 +356,7 @@ impl PopupRenderer {
             bits,
             w: w as i32,
             h: h as i32,
+            dpi,
             bg_brush,
             border_brush,
             white_brush,
@@ -336,27 +374,31 @@ impl PopupRenderer {
             goal_text,
             win_bg,
             win_text,
-            fmt_badge: mk_font(10.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
+            fmt_badge: mk_font(14.0, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER)?,
             fmt_emoji: Fmt {
                 fmt: fmt_emoji_fmt,
                 buf: RefCell::new(Vec::new()),
             },
             fmt_title: mk_font(
-                12.5,
+                19.0,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
             )?,
             fmt_desc: mk_font(
-                10.5,
+                13.0,
                 DWRITE_FONT_WEIGHT_NORMAL,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
             )?,
             fmt_score: mk_font(
-                11.0,
+                14.0,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 DWRITE_TEXT_ALIGNMENT_TRAILING,
             )?,
             last_event: None,
+            target: POINT { x: 0, y: 0 },
+            reveal_start: None,
+            shown_at: None,
+            ttl_ms: 0,
             buf: Vec::new(),
             _no_send: PhantomData,
         })
@@ -384,6 +426,8 @@ impl PopupRenderer {
         )?;
         let rt = factory.CreateWicBitmapRenderTarget(&wic, &software_rt_props())?;
         rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+        let ddpi = if self.dpi == 0 { 96.0 } else { self.dpi as f32 };
+        rt.SetDpi(ddpi, ddpi);
 
         // Reuse mem_dc across rebuilds; recreate only if it was lost.
         if self.mem_dc.is_invalid() {
@@ -481,7 +525,34 @@ impl PopupRenderer {
 
     pub unsafe fn present(&mut self, pos: &POINT, event: &MatchEvent) -> Result<()> {
         self.last_event = Some(event.clone());
+        // Native 1:1 layout for the 340x110 card.
         let (w, h) = (self.w as f32, self.h as f32);
+        let now = Instant::now();
+
+        // Reveal: 240ms ease-out-cubic slide (48 physical px) + fade. While a
+        // reveal is active the card draws at the stored resting target, so a
+        // mid-animation WM_PAINT re-present lands on the same trajectory.
+        let base = if self.reveal_start.is_some() {
+            self.target
+        } else {
+            *pos
+        };
+        let (lift_px, alpha) = match self.reveal_start {
+            Some(t0) if !reduced_motion() => {
+                let t = (now - t0).as_secs_f32() / (REVEAL_MS / 1000.0);
+                if t >= 1.0 {
+                    self.reveal_start = None;
+                    (0.0, 255)
+                } else {
+                    let e = 1.0 - (1.0 - t).powi(3);
+                    ((1.0 - e) * REVEAL_LIFT_PX, (e * 255.0) as u8)
+                }
+            }
+            _ => {
+                self.reveal_start = None;
+                (0.0, 255)
+            }
+        };
         self.rt.BeginDraw();
         self.rt.Clear(None);
 
@@ -493,8 +564,8 @@ impl PopupRenderer {
         };
         let rr = D2D1_ROUNDED_RECT {
             rect: full_rect,
-            radiusX: 10.0,
-            radiusY: 10.0,
+            radiusX: 12.0,
+            radiusY: 12.0,
         };
         self.rt.FillRoundedRectangle(&rr, &self.bg_brush);
         // HC: bg is already opaque; bump the border to 2px.
@@ -506,15 +577,15 @@ impl PopupRenderer {
 
         // Top Row: Badge Pill on left, Current Score on right
         let badge_rect = D2D_RECT_F {
-            left: 12.0,
-            top: 10.0,
-            right: 88.0,
-            bottom: 28.0,
+            left: 14.0,
+            top: 12.0,
+            right: 114.0,
+            bottom: 34.0,
         };
         let badge_rr = D2D1_ROUNDED_RECT {
             rect: badge_rect,
-            radiusX: 4.0,
-            radiusY: 4.0,
+            radiusX: 5.0,
+            radiusY: 5.0,
         };
         self.rt.FillRoundedRectangle(&badge_rr, badge_bg);
         // Badge labels carry emoji (🏆/🟥/🏏/⚽/💥/⚡): must use the Emoji
@@ -524,10 +595,10 @@ impl PopupRenderer {
             .text(&self.rt, badge_label, &badge_rect, badge_text);
 
         let score_rect = D2D_RECT_F {
-            left: 96.0,
-            top: 10.0,
-            right: w - 12.0,
-            bottom: 28.0,
+            left: 122.0,
+            top: 12.0,
+            right: w - 14.0,
+            bottom: 34.0,
         };
         self.fmt_score.text(
             &self.rt,
@@ -538,10 +609,10 @@ impl PopupRenderer {
 
         // Middle Row: Event Headline
         let title_rect = D2D_RECT_F {
-            left: 12.0,
-            top: 33.0,
-            right: w - 12.0,
-            bottom: 53.0,
+            left: 14.0,
+            top: 38.0,
+            right: w - 14.0,
+            bottom: 66.0,
         };
         self.fmt_title.text(
             &self.rt,
@@ -552,10 +623,10 @@ impl PopupRenderer {
 
         // Bottom Row: Description / Subtext
         let desc_rect = D2D_RECT_F {
-            left: 12.0,
-            top: 54.0,
-            right: w - 12.0,
-            bottom: 74.0,
+            left: 14.0,
+            top: 66.0,
+            right: w - 14.0,
+            bottom: 90.0,
         };
         let clean_desc = clean_event_detail(&event.description, event.event_type);
         self.fmt_desc.text(
@@ -564,6 +635,30 @@ impl PopupRenderer {
             &desc_rect,
             &self.dim_brush,
         );
+
+        // Accent timeout bar: drains over the auto-hide TTL in the event's
+        // own accent color. Static full bar under reduced-motion.
+        if self.ttl_ms > 0 {
+            let frac = match self.shown_at {
+                Some(t0) if !reduced_motion() => {
+                    (1.0 - (now - t0).as_secs_f32() / (self.ttl_ms as f32 / 1000.0))
+                        .clamp(0.0, 1.0)
+                }
+                _ => 1.0,
+            };
+            let bar_w = (w - 24.0) * frac;
+            if bar_w > 1.0 {
+                self.rt.FillRectangle(
+                    &D2D_RECT_F {
+                        left: 12.0,
+                        top: h - 9.0,
+                        right: 12.0 + bar_w,
+                        bottom: h - 6.0,
+                    },
+                    badge_text,
+                );
+            }
+        }
 
         self.rt.EndDraw(None, None)?;
 
@@ -582,14 +677,18 @@ impl PopupRenderer {
         let blend = BLENDFUNCTION {
             BlendOp: AC_SRC_OVER as u8,
             BlendFlags: 0,
-            SourceConstantAlpha: 255,
+            SourceConstantAlpha: alpha,
             AlphaFormat: AC_SRC_ALPHA as u8,
+        };
+        let draw_pos = POINT {
+            x: base.x,
+            y: base.y + lift_px.round() as i32,
         };
 
         UpdateLayeredWindow(
             self.hwnd,
             None,
-            Some(pos),
+            Some(&draw_pos),
             Some(&size),
             self.mem_dc,
             Some(&src_pt),
@@ -658,15 +757,27 @@ unsafe extern "system" fn popup_wnd_proc(
         }
         WM_TIMER => {
             if wparam.0 == TIMER_AUTOHIDE_ID {
-                let _ = KillTimer(hwnd, TIMER_AUTOHIDE_ID);
-                let _ = ShowWindow(hwnd, SW_HIDE);
+                dismiss_popup(hwnd);
+            } else if wparam.0 == TIMER_ANIM_ID {
+                // Reveal/timeout-bar frame: re-present the last event at the
+                // current animation instant (same recreate policy as WM_PAINT).
+                let renderer_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut PopupRenderer;
+                if let Some(renderer) = renderer_ptr.as_mut() {
+                    if let Some(event) = renderer.last_event() {
+                        let target = renderer.target;
+                        if let Err(e) = renderer.present(&target, &event) {
+                            if e.code() == D2DERR_RECREATE_TARGET && renderer.recreate().is_ok() {
+                                let _ = renderer.present(&target, &event);
+                            }
+                        }
+                    }
+                }
             }
             LRESULT(0)
         }
         WM_LBUTTONDOWN | WM_LBUTTONUP => {
             // Click to dismiss
-            let _ = KillTimer(hwnd, TIMER_AUTOHIDE_ID);
-            let _ = ShowWindow(hwnd, SW_HIDE);
+            dismiss_popup(hwnd);
             LRESULT(0)
         }
         WM_KEYDOWN => {
@@ -676,18 +787,17 @@ unsafe extern "system" fn popup_wnd_proc(
             // the primary dismiss paths. Screen-reader users get the same
             // event via the overlay flash + tray tooltip.
             if wparam.0 == VK_ESCAPE.0 as usize {
-                let _ = KillTimer(hwnd, TIMER_AUTOHIDE_ID);
-                let _ = ShowWindow(hwnd, SW_HIDE);
+                dismiss_popup(hwnd);
             }
             LRESULT(0)
         }
         WM_CLOSE => {
-            let _ = KillTimer(hwnd, TIMER_AUTOHIDE_ID);
-            let _ = ShowWindow(hwnd, SW_HIDE);
+            dismiss_popup(hwnd);
             LRESULT(0)
         }
         WM_DESTROY => {
             let _ = KillTimer(hwnd, TIMER_AUTOHIDE_ID);
+            let _ = KillTimer(hwnd, TIMER_ANIM_ID);
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
@@ -695,7 +805,7 @@ unsafe extern "system" fn popup_wnd_proc(
 }
 
 impl MiniPopupWindow {
-    pub unsafe fn create() -> Result<Self> {
+    pub unsafe fn create(w: u32, h: u32, dpi: u32) -> Result<Self> {
         // P0-9: never panic on GUI startup paths; propagate so main can
         // show MessageBoxW + ExitProcess(1).
         let hinstance = GetModuleHandleW(None)?;
@@ -717,15 +827,15 @@ impl MiniPopupWindow {
             WS_POPUP,
             0,
             0,
-            POPUP_W as i32,
-            POPUP_H as i32,
+            w as i32,
+            h as i32,
             None,
             HMENU::default(),
             hinstance,
             None,
         )?;
 
-        let mut renderer = Box::new(PopupRenderer::new(hwnd, POPUP_W, POPUP_H)?);
+        let mut renderer = Box::new(PopupRenderer::new(hwnd, w, h, dpi)?);
         // Expose the renderer to popup_wnd_proc for WM_PAINT re-present.
         // The Box is heap-stable; the pointer stays valid for the window lifetime.
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, renderer.as_mut() as *mut _ as isize);
@@ -737,7 +847,44 @@ impl MiniPopupWindow {
         })
     }
 
+    /// Re-sync the window + renderer to a (possibly new) monitor DPI before
+    /// showing. The scoreboard overlay re-scales on WM_DPICHANGED; popups are
+    /// transient, so they re-sync lazily here instead — same physical size as
+    /// the overlay on whatever monitor hosts the main window. No-op when
+    /// nothing changed.
+    pub unsafe fn sync_size(&mut self, w: u32, h: u32, dpi: u32) {
+        let r = &mut *self.renderer;
+        if r.w == w as i32 && r.h == h as i32 && r.dpi == dpi {
+            return;
+        }
+        r.w = w as i32;
+        r.h = h as i32;
+        r.dpi = dpi;
+        let _ = SetWindowPos(
+            self.hwnd,
+            None,
+            0,
+            0,
+            w as i32,
+            h as i32,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+        let _ = r.recreate();
+    }
+
     pub unsafe fn show_event(&mut self, event: MatchEvent, pos: POINT) {
+        let timeout_ms: u32 = if event.event_type == MatchEventType::Win {
+            WIN_TTL.as_millis() as u32
+        } else {
+            EVENT_TTL.as_millis() as u32
+        };
+        // Arm the entrance + timeout-bar animation before the first frame.
+        // Reduced-motion: appear instantly with a static full bar.
+        let now = Instant::now();
+        self.renderer.target = pos;
+        self.renderer.shown_at = Some(now);
+        self.renderer.ttl_ms = timeout_ms;
+        self.renderer.reveal_start = if reduced_motion() { None } else { Some(now) };
         if let Err(e) = self.renderer.present(&pos, &event) {
             // P0-7: EndDraw RECREATE_TARGET (device lost) must recreate +
             // retry once, never be swallowed. Other errors stay best-effort.
@@ -755,17 +902,14 @@ impl MiniPopupWindow {
             0,
             SWP_NOSIZE | SWP_NOACTIVATE,
         );
-        let timeout_ms: u32 = if event.event_type == MatchEventType::Win {
-            WIN_TTL.as_millis() as u32
-        } else {
-            EVENT_TTL.as_millis() as u32
-        };
         let _ = SetTimer(self.hwnd, TIMER_AUTOHIDE_ID, timeout_ms, None);
+        if !reduced_motion() {
+            let _ = SetTimer(self.hwnd, TIMER_ANIM_ID, ANIM_MS, None);
+        }
         self.current_event = Some(event);
     }
 
     pub unsafe fn hide(&mut self) {
-        let _ = KillTimer(self.hwnd, TIMER_AUTOHIDE_ID);
-        let _ = ShowWindow(self.hwnd, SW_HIDE);
+        dismiss_popup(self.hwnd);
     }
 }

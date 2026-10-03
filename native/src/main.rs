@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use windows::core::*;
 #[cfg(windows)]
 use windows::Win32::Foundation::{
-    GetLastError, D2DERR_RECREATE_TARGET, HWND, LPARAM, LRESULT, POINT, RECT, RPC_E_CHANGED_MODE,
-    S_FALSE, S_OK, WPARAM,
+    GetLastError, BOOL, D2DERR_RECREATE_TARGET, HMODULE, HWND, LPARAM, LRESULT, POINT, RECT,
+    RPC_E_CHANGED_MODE, S_FALSE, S_OK, WPARAM,
 };
 #[cfg(windows)]
 use windows::Win32::Graphics::Gdi::{
@@ -22,7 +22,7 @@ use windows::Win32::Graphics::Gdi::{
 #[cfg(windows)]
 use windows::Win32::System::Com::CoUninitialize;
 #[cfg(windows)]
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 #[cfg(windows)]
 use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX};
 #[cfg(windows)]
@@ -96,7 +96,7 @@ pub fn log_live_benchmark_sample(state_label: &str) {
     }
 }
 #[cfg(windows)]
-use windows::Win32::UI::Controls::WM_MOUSELEAVE;
+use windows::Win32::UI::Controls::{SetWindowTheme, WM_MOUSELEAVE};
 #[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, ReleaseCapture, SetCapture, TrackMouseEvent, UnregisterHotKey,
@@ -374,12 +374,74 @@ unsafe fn hide_overlay(hwnd: HWND, state: &mut AppState) {
     log_live_benchmark_sample("Idle Background (Tray Only)");
 }
 
+/// Full Win32 dark-mode opt-in so popup menus (tray menu) render dark.
+/// SetWindowTheme DarkMode_Explorer alone was ignored, so drive the complete
+/// uxtheme handshake: SetPreferredAppMode(AllowDark) [ord 135] +
+/// AllowDarkModeForWindow per top-level window [ord 133] + the theme +
+/// RefreshImmersiveColorPolicyState [ord 104]. Every lookup is fallible —
+/// pre-1809 Windows simply keeps light menus. No-ops after the first call.
 #[cfg(windows)]
-unsafe fn bottom_right_popup_point(hwnd: HWND) -> POINT {
+unsafe fn enable_dark_mode(hwnd: HWND) {
+    use windows::core::PCSTR;
+    unsafe fn ordinal(module: HMODULE, ord: u16) -> Option<*const core::ffi::c_void> {
+        let addr = GetProcAddress(module, PCSTR::from_raw(ord as usize as *const u8));
+        let ptr: *const core::ffi::c_void = std::mem::transmute(addr);
+        (!ptr.is_null()).then_some(ptr)
+    }
+    static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let Ok(uxtheme) = GetModuleHandleW(w!("uxtheme.dll")) else {
+        return;
+    };
+    // 135: SetPreferredAppMode(int) -> int. 2 = AllowDark.
+    if let Some(p) = ordinal(uxtheme, 135) {
+        let f: unsafe extern "system" fn(i32) -> i32 = std::mem::transmute(p);
+        f(2);
+    }
+    // 133: AllowDarkModeForWindow(HWND, BOOL) -> BOOL.
+    if let Some(p) = ordinal(uxtheme, 133) {
+        let f: unsafe extern "system" fn(HWND, BOOL) -> BOOL = std::mem::transmute(p);
+        let _ = f(hwnd, BOOL(1));
+    }
+    let _ = SetWindowTheme(hwnd, w!("DarkMode_Explorer"), PCWSTR::null());
+    // 104: RefreshImmersiveColorPolicyState(). Once per process is enough.
+    if !DONE.swap(true, std::sync::atomic::Ordering::Release) {
+        if let Some(p) = ordinal(uxtheme, 104) {
+            let f: unsafe extern "system" fn() = std::mem::transmute(p);
+            f();
+        }
+    }
+}
+
+#[cfg(windows)]
+/// Re-sync a visible popup after a DPI/monitor move: re-size to the current
+/// DPI, move to the fresh corner, repaint the current frame. No animation
+/// restart, no timer changes. Without this a mid-show DPI switch freezes the
+/// popup at its old footprint next to a freshly re-scaled overlay.
+#[cfg(windows)]
+unsafe fn resync_visible_popup(state: &mut AppState, hwnd: HWND) {
+    let dpi = state.dpi;
+    if let Some(popup) = state.popup_win.as_mut() {
+        if IsWindowVisible(popup.hwnd).as_bool() {
+            let (pw, ph) = popup_size_for(dpi);
+            let pos = bottom_right_popup_point(hwnd, pw, ph);
+            popup.relayout(pw, ph, dpi, pos);
+        }
+    }
+}
+
+/// Physical popup footprint for the current monitor DPI (same scale math as
+/// the scoreboard overlay, so the two always match pixel-for-pixel).
+#[cfg(windows)]
+fn popup_size_for(dpi: u32) -> (u32, u32) {
+    (scale_for_dpi(POPUP_W, dpi), scale_for_dpi(POPUP_H, dpi))
+}
+
+#[cfg(windows)]
+unsafe fn bottom_right_popup_point(hwnd: HWND, w: u32, h: u32) -> POINT {
     let wa = work_area_for(hwnd);
     POINT {
-        x: wa.right - POPUP_W as i32 - 12,
-        y: wa.bottom - POPUP_H as i32 - 12,
+        x: wa.right - w as i32 - 12,
+        y: wa.bottom - h as i32 - 12,
     }
 }
 
@@ -790,8 +852,11 @@ unsafe extern "system" fn wnd_proc(
                             let _ = SetTimer(hwnd, OVERLAY_FLASH_TIMER, timeout_ms, None);
                         }
                     } else {
-                        let pos = bottom_right_popup_point(hwnd);
+                        let dpi = state.dpi;
+                        let (pw, ph) = popup_size_for(dpi);
+                        let pos = bottom_right_popup_point(hwnd, pw, ph);
                         if let Some(popup) = state.popup_win.as_mut() {
+                            popup.sync_size(pw, ph, dpi);
                             popup.show_event(event, pos);
                         }
                     }
@@ -1805,6 +1870,9 @@ fn main() {
 
         HMAIN.store(hwnd.0 as usize, Ordering::Release);
 
+        // Dark tray menu (see enable_dark_mode: theme alone was ignored).
+        enable_dark_mode(hwnd);
+
         // Real DPI for this monitor (96 fallback); refreshed on WM_DPICHANGED.
         let dpi = GetDpiForWindow(hwnd);
         let dpi = if dpi == 0 { 96 } else { dpi };
@@ -1849,7 +1917,8 @@ fn main() {
         renderer.set_dpi(dpi);
 
         let dash_renderer = DashboardRenderer::new(dash_hwnd, init_dash_w, init_dash_h, dpi).ok();
-        let popup_win = MiniPopupWindow::create().ok();
+        let (popup_w, popup_h) = popup_size_for(dpi);
+        let popup_win = MiniPopupWindow::create(popup_w, popup_h, dpi).ok();
         let tray_icon_size = scale_for_dpi(16, dpi) as i32;
         let tray_icon = load_app_icon(tray_icon_size);
         let tray = TrayIcon::new(hwnd, "SportsPulse - Live Scores", Some(tray_icon));
