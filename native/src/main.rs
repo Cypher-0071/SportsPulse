@@ -2118,13 +2118,18 @@ fn main() {
             }
         }
 
-        // 7. Start with the dashboard visible (overlay hidden until Track).
-    let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AppState;
+        // 7. Start with the dashboard visible (overlay hidden until Track),
+        // unless --minimized/--tray (autostart installs use this so login is
+        // silent: tray + hotkeys live, no window steals focus).
+        let minimized = std::env::args().any(|a| a == "--minimized" || a == "--tray");
+        let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AppState;
         if let Some(state) = state_ptr.as_mut() {
             present_dashboard(state, dash_pos);
         }
-        let _ = ShowWindow(dash_hwnd, SW_SHOW);
-        let _ = SetForegroundWindow(dash_hwnd);
+        if !minimized {
+            let _ = ShowWindow(dash_hwnd, SW_SHOW);
+            let _ = SetForegroundWindow(dash_hwnd);
+        }
 
         // 8. Spawn Tokio Engine
         let engine_handle = spawn_engine_worker(cache, match_state);
