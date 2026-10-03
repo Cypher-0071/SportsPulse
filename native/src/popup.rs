@@ -1086,19 +1086,15 @@ impl MiniPopupWindow {
         self.renderer.in_present = true;
         let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
         self.renderer.in_present = false;
-        // Best-effort in release; fail loudly in debug so a lost autohide
-        // tick (stuck-visible popup) can't hide silently.
-        debug_assert_ne!(
-            SetTimer(self.hwnd, TIMER_AUTOHIDE_ID, timeout_ms, None),
-            0,
-            "SetTimer failed"
-        );
+        // Timers are best-effort in release (a 0 return only loses the
+        // auto-hide/animation tick); fail loudly in debug. NOTE: never put
+        // the SetTimer call itself inside debug_assert_* — it would compile
+        // out in release and the timer would never arm.
+        let autohide_armed = SetTimer(self.hwnd, TIMER_AUTOHIDE_ID, timeout_ms, None) != 0;
+        debug_assert!(autohide_armed, "SetTimer failed");
         if !reduced_motion() {
-            debug_assert_ne!(
-                SetTimer(self.hwnd, TIMER_ANIM_ID, ANIM_MS, None),
-                0,
-                "SetTimer failed"
-            );
+            let anim_armed = SetTimer(self.hwnd, TIMER_ANIM_ID, ANIM_MS, None) != 0;
+            debug_assert!(anim_armed, "SetTimer failed");
         }
         self.current_event = Some(event);
     }
