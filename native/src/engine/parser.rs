@@ -116,9 +116,20 @@ pub fn is_test_match(comp: &serde_json::Value, title: &str) -> bool {
     title_has_test_word(title)
 }
 
-/// Total-overs cap for RRR maths. Handles ESPN's `f64` (`20.0`),
-/// integer (`20`) and legacy `bool`/missing shapes (default 50.0).
-fn limited_overs_value(comp: &serde_json::Value) -> f32 {
+/// Best-effort total-overs cap using every signal available at parse time.
+/// Priority: numeric `limitedOvers` -> `/total` in linescore score text ->
+/// title hint -> 50.0 legacy default.
+///
+/// The score-string fallback matters: live T20 payloads have been seen
+/// without a numeric `limitedOvers` (bool/missing), which previously
+/// defaulted to 50 and produced RRR ~3.96 instead of ~12.66 for a
+/// `Need 173 off 82 balls` chase.
+fn total_overs_cap(
+    comp: &serde_json::Value,
+    match_title: &str,
+    competitors_arr: &[serde_json::Value],
+) -> f32 {
+    // 1. Explicit numeric cap (covers f64/u64/string shapes).
     if let Some(lo) = comp.get("limitedOvers") {
         if let Some(n) = lo.as_u64() {
             if n > 0 {
@@ -128,9 +139,111 @@ fn limited_overs_value(comp: &serde_json::Value) -> f32 {
             if f > 0.0 {
                 return f as f32;
             }
+        } else if let Some(s) = lo.as_str() {
+            if let Ok(n) = s.trim().parse::<f32>() {
+                if n > 0.0 {
+                    return n;
+                }
+            }
+        }
+        // bool `true` (limited, unknown total) falls through to the
+        // score/title signals below instead of the 50.0 default.
+    } else {
+        // No `limitedOvers` key at all: still try score/title before default.
+    }
+
+    // 2. `/total` inside any linescore `score` string, e.g. "39/3 (6.2/20 ov)".
+    for c in competitors_arr {
+        if let Some(linescores) = c.get("linescores").and_then(|v| v.as_array()) {
+            for l in linescores {
+                if let Some(s) = l.get("score").and_then(|v| v.as_str()) {
+                    if let Some(total) = parse_total_overs_from_score(s) {
+                        return total;
+                    }
+                }
+            }
+        }
+        if let Some(s) = c.get("score").and_then(|v| v.as_str()) {
+            if let Some(total) = parse_total_overs_from_score(s) {
+                return total;
+            }
         }
     }
+
+    // 3. Title hint ("3rd T20I ...", "ODI", "T10", "Hundred").
+    if let Some(total) = infer_total_overs_from_title(match_title) {
+        return total;
+    }
+
+    // 4. Legacy default (ODI length).
     50.0
+}
+
+/// Extract the `/total` from a score string's parenthesised overs part:
+/// `"39/3 (6.2/20 ov)"` -> `Some(20.0)`. Returns None when there is no
+/// `/` inside `(...)` (e.g. `"145/3 (14.2 ov)"`, `"211/6"`).
+fn parse_total_overs_from_score(score: &str) -> Option<f32> {
+    let open = score.find('(')?;
+    let inner = &score[open + 1..];
+    // Only look inside the parens (up to `)` if present).
+    let inner = inner.split(')').next().unwrap_or(inner);
+    let slash = inner.find('/')?;
+    let after = inner[slash + 1..].trim();
+    let mut num = String::new();
+    for ch in after.chars() {
+        if ch.is_ascii_digit() || ch == '.' {
+            num.push(ch);
+        } else {
+            break;
+        }
+    }
+    if num.is_empty() {
+        return None;
+    }
+    num.parse::<f32>().ok().filter(|&n| (5.0..=100.0).contains(&n))
+}
+
+/// Infer the innings cap from the match title/description.
+/// `T10` -> 10, `T20`/`Twenty20` -> 20, `Hundred` (100 balls) -> 16.4,
+/// `ODI`/`One Day` -> 50. None when unknown.
+fn infer_total_overs_from_title(title: &str) -> Option<f32> {
+    let lower = title.to_ascii_lowercase();
+    if lower.contains("t10") {
+        return Some(10.0);
+    }
+    if lower.contains("t20") || lower.contains("twenty20") || lower.contains("20 over") {
+        return Some(20.0);
+    }
+    if lower.contains("hundred") {
+        // 100 balls = 16 overs + 4 balls -> 16.4 in cricket notation.
+        return Some(16.4);
+    }
+    if lower.contains("odi")
+        || lower.contains("one day")
+        || lower.contains("one-day")
+        || lower.contains("oneday")
+        || lower.contains("50 over")
+    {
+        return Some(50.0);
+    }
+    None
+}
+
+/// User-visible score cleanup: drop ESPN's ` ov` suffix and ensure the
+/// bracket is closed. `"39/3 (6.2/20 ov)"` -> `"39/3 (6.2/20)"`,
+/// `"IND 145/3 (14.2 ov)"` -> `"IND 145/3 (14.2)"`. A dangling
+/// `"... (6.2/20 ov"` (no `)`) is closed to `"... (6.2/20)"`.
+fn normalize_score_display(raw: &str) -> String {
+    let mut out = raw.replace(" ov)", ")").replace(" OV)", ")");
+    // Trailing ` ov` without a closing paren (or with it cropped).
+    if out.ends_with(" ov") || out.ends_with(" OV") {
+        out.truncate(out.len() - 3);
+    }
+    let out = out.trim().to_string();
+    if out.contains('(') && !out.contains(')') {
+        return format!("{out})");
+    }
+    out
 }
 
 /// Convert cricket `overs` (`14.2` = 14 overs + 2 balls) to a ball count.
@@ -291,7 +404,7 @@ pub fn parse_match_detail(
 
     let is_test = is_test_match(comp, &match_title);
 
-    let limited_overs = limited_overs_value(comp);
+    let limited_overs = total_overs_cap(comp, &match_title, competitors_arr);
 
     // Check if team 1 is chasing
     if batting_team == BATTING_TEAM1 {
@@ -430,11 +543,14 @@ fn parse_competitor(comp: &serde_json::Value) -> TeamScore {
                 .filter(|s| !s.is_empty())
                 .collect();
             if !joined.is_empty() {
-                score_str = joined.join(" & ");
+                let raw = joined.join(" & ");
+                score_str = normalize_score_display(&raw);
             } else if let Some(s) = linescore.get("score").and_then(|v| v.as_str()) {
-                score_str = s.to_string();
+                score_str = normalize_score_display(s);
             }
         }
+    } else {
+        score_str = normalize_score_display(&score_str);
     }
 
     let is_winner = comp
@@ -692,12 +808,12 @@ fn extract_score_str(ball_data: &serde_json::Value) -> String {
         .unwrap_or(0.0);
 
     match (team_abbr.is_empty(), home_score.is_empty()) {
-        (false, false) => format!("{} {} ({} ov)", team_abbr, home_score, over_num),
-        (true, false) => format!("{} ({} ov)", home_score, over_num),
-        (false, true) => format!("{} ({} ov)", team_abbr, over_num),
+        (false, false) => format!("{team_abbr} {home_score} ({over_num})"),
+        (true, false) => format!("{home_score} ({over_num})"),
+        (false, true) => format!("{team_abbr} ({over_num})"),
         (true, true) => {
             if over_num > 0.0 {
-                format!("{} ov", over_num)
+                format!("({over_num})")
             } else {
                 String::new()
             }
@@ -1355,7 +1471,7 @@ mod tests {
             "homeScore": "145/3",
             "over": { "overs": 14.2 }
         });
-        assert_eq!(extract_score_str(&json), "IND 145/3 (14.2 ov)");
+        assert_eq!(extract_score_str(&json), "IND 145/3 (14.2)");
     }
 
     #[test]
@@ -2488,8 +2604,119 @@ mod tests {
     }
 
     #[test]
-    fn test_soccer_half_time_maps_to_break() {
-        for detail in ["Half Time", "HT", "Half-Time Interval", "Half-time break"] {
+    fn test_rrr_screenshot_repro_t20_without_numeric_cap() {
+        // Screenshot repro: PAK 39/3 (6.2/20) chasing 212, Need 173.
+        // No numeric `limitedOvers` (bool/missing) must still infer 20 from
+        // the `/20` in the score string, not default to 50 (which gave 3.96).
+        let json = serde_json::json!({
+            "header": {
+                "name": "India v Pakistan",
+                "description": "Asia Cup T20 at Dubai",
+                "competitions": [{
+                    "status": { "type": { "state": "in", "detail": "Live" } },
+                    "competitors": [
+                        {
+                            "team": { "id": "6", "displayName": "India", "abbreviation": "IND" },
+                            "score": "211/6",
+                            "linescores": [{
+                                "score": "211/6",
+                                "isCurrent": false,
+                                "runs": 211,
+                                "wickets": 6,
+                                "overs": 20.0,
+                                "isBatting": false
+                            }]
+                        },
+                        {
+                            "team": { "id": "7", "displayName": "Pakistan", "abbreviation": "PAK" },
+                            "score": "39/3 (6.2/20 ov)",
+                            "linescores": [{
+                                "score": "39/3 (6.2/20 ov)",
+                                "isCurrent": true,
+                                "runs": 39,
+                                "wickets": 3,
+                                "overs": 6.2,
+                                "isBatting": true,
+                                "target": 212
+                            }]
+                        }
+                    ]
+                }]
+            }
+        });
+        let score = parse_match_detail(&json, "s", "m").expect("should parse");
+        assert_eq!(score.runs_needed, Some(173));
+        // 173 needed off 82 balls (120-38) = 12.66, not the buggy 3.96 (50-over math).
+        let rrr = score.rrr.expect("RRR must exist");
+        assert!((rrr - 12.66).abs() < 0.05, "RRR was {rrr}");
+        // Score display drops ` ov` and keeps the bracket closed.
+        assert_eq!(score.team2.score, "39/3 (6.2/20)");
+    }
+
+    #[test]
+    fn test_rrr_bool_cap_falls_back_to_title() {
+        // `limitedOvers: true` (limited, unknown total) + T20I title -> 20.
+        let json = serde_json::json!({
+            "header": {
+                "name": "India v Australia",
+                "description": "3rd T20I at Hyderabad",
+                "competitions": [{
+                    "limitedOvers": true,
+                    "status": { "type": { "state": "in", "detail": "Live" } },
+                    "competitors": [
+                        {
+                            "team": { "id": "6", "displayName": "India", "abbreviation": "IND" },
+                            "score": "152/2",
+                            "linescores": [{
+                                "score": "152/2",
+                                "isCurrent": true,
+                                "runs": 152,
+                                "wickets": 2,
+                                "overs": 15.0,
+                                "isBatting": true,
+                                "target": 187
+                            }]
+                        },
+                        {
+                            "team": { "id": "2", "displayName": "Australia", "abbreviation": "AUS" },
+                            "score": "186/7",
+                            "linescores": [{
+                                "score": "186/7",
+                                "isCurrent": false,
+                                "runs": 186,
+                                "wickets": 7,
+                                "overs": 20.0,
+                                "isBatting": false
+                            }]
+                        }
+                    ]
+                }]
+            }
+        });
+        let score = parse_match_detail(&json, "s", "m").expect("should parse");
+        assert_eq!(score.rrr, Some(7.0));
+    }
+
+    #[test]
+    fn test_score_display_normalization() {
+        assert_eq!(
+            normalize_score_display("39/3 (6.2/20 ov)"),
+            "39/3 (6.2/20)"
+        );
+        assert_eq!(
+            normalize_score_display("IND 145/3 (14.2 ov)"),
+            "IND 145/3 (14.2)"
+        );
+        // Dangling bracket from a cropped feed still gets closed.
+        assert_eq!(normalize_score_display("39/3 (6.2/20 ov"), "39/3 (6.2/20)");
+        assert_eq!(parse_total_overs_from_score("39/3 (6.2/20 ov)"), Some(20.0));
+        assert_eq!(parse_total_overs_from_score("145/3 (14.2 ov)"), None);
+        assert_eq!(infer_total_overs_from_title("3rd T20I at Hyderabad"), Some(20.0));
+        assert_eq!(infer_total_overs_from_title("2nd ODI at Leeds"), Some(50.0));
+    }
+
+    #[test]
+    fn test_soccer_half_time_maps_to_break() {        for detail in ["Half Time", "HT", "Half-Time Interval", "Half-time break"] {
             let json = serde_json::json!({
                 "header": {
                     "name": "Arsenal vs Chelsea",
