@@ -42,7 +42,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 
 [target.'cfg(windows)'.dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "default-tls"] }
-windows = { version = "0.58", features = [
+windows = { version = "0.62", features = [
     "Foundation_Numerics",
     "Win32_Foundation",
     "Win32_Graphics_Direct2D",
