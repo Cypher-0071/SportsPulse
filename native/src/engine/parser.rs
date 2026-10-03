@@ -17,23 +17,70 @@ const ESPN_INDIA_TEAM_ID: &str = "6";
 /// Returns true only when `test` appears as a standalone word, so
 /// `Latest`, `Contest`, `Greatest`, `Testament` do not match.
 fn title_has_test_word(title: &str) -> bool {
-    let lower = title.to_lowercase();
+    has_word_ascii_lower(&title.to_lowercase(), "test")
+}
+
+/// Case-insensitive whole-word match without a regex crate.
+fn has_word_ascii_lower(lower: &str, needle: &str) -> bool {
     let bytes = lower.as_bytes();
-    let needle = b"test";
-    if bytes.len() < 4 {
+    let n = needle.as_bytes();
+    if bytes.len() < n.len() {
         return false;
     }
-    for i in 0..=bytes.len() - needle.len() {
-        if &bytes[i..i + 4] != needle {
+    for i in 0..=bytes.len() - n.len() {
+        if &bytes[i..i + n.len()] != n {
             continue;
         }
         let before_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
-        let after_ok = i + 4 >= bytes.len() || !bytes[i + 4].is_ascii_alphanumeric();
+        let after_ok = i + n.len() >= bytes.len() || !bytes[i + n.len()].is_ascii_alphanumeric();
         if before_ok && after_ok {
             return true;
         }
     }
     false
+}
+
+/// India side check: numeric id `6` is authoritative; otherwise the
+/// display name must contain whole-word `india` (so `India`, `India A`,
+/// `India Women` match) and must not contain `rest of` (kills the
+/// `Rest of India` domestic leak).
+fn is_india_side(id: &str, display_name: &str) -> bool {
+    let lower = display_name.to_lowercase();
+    if lower.contains("rest of") {
+        return false;
+    }
+    if id == ESPN_INDIA_TEAM_ID {
+        return true;
+    }
+    if lower == "ind" {
+        return true;
+    }
+    has_word_ascii_lower(&lower, "india")
+}
+
+/// Cricket discovery status with the same fallback chain soccer uses:
+/// string `"in"`/`"pre"` first, then `status.type.state`, then
+/// `fullStatus.type.state`.
+fn cricket_event_status(event: &serde_json::Value) -> String {
+    if let Some(s) = event.get("status").and_then(|v| v.as_str()) {
+        s.to_string()
+    } else if let Some(s) = event
+        .get("status")
+        .and_then(|st| st.get("type"))
+        .and_then(|t| t.get("state"))
+        .and_then(|v| v.as_str())
+    {
+        s.to_string()
+    } else if let Some(s) = event
+        .get("fullStatus")
+        .and_then(|st| st.get("type"))
+        .and_then(|t| t.get("state"))
+        .and_then(|v| v.as_str())
+    {
+        s.to_string()
+    } else {
+        String::new()
+    }
 }
 
 /// Robust Test-match detection.
@@ -116,14 +163,14 @@ pub fn parse_all_live_indian_matches(
                             for event in events {
                                 let match_id =
                                     event.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                                let status =
-                                    event.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                                let status_raw = cricket_event_status(event);
+                                let status_lower = status_raw.trim().to_ascii_lowercase();
                                 let name = event
                                     .get("name")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("Cricket Match");
 
-                                if status == "in" || status == "pre" {
+                                if status_lower == "in" || status_lower == "pre" {
                                     if let Some(competitors) =
                                         event.get("competitors").and_then(|v| v.as_array())
                                     {
@@ -137,11 +184,7 @@ pub fn parse_all_live_indian_matches(
                                                 .get("displayName")
                                                 .and_then(|v| v.as_str())
                                                 .unwrap_or("");
-                                            let lower_name = display_name.to_lowercase();
-                                            if id == ESPN_INDIA_TEAM_ID
-                                                || lower_name.contains("india")
-                                                || lower_name == "ind"
-                                            {
+                                            if is_india_side(id, display_name) {
                                                 is_india_match = true;
                                                 break;
                                             }
@@ -156,7 +199,7 @@ pub fn parse_all_live_indian_matches(
                                                 series_id.to_string(),
                                                 match_id.to_string(),
                                                 name.to_string(),
-                                                status.to_string(),
+                                                status_lower.clone(),
                                                 league_name.clone(),
                                                 start_time,
                                             ));
@@ -369,7 +412,10 @@ fn parse_competitor(comp: &serde_json::Value) -> TeamScore {
                 .unwrap_or(0) as u32;
             overs = linescore
                 .get("overs")
-                .and_then(|v| v.as_f64())
+                .and_then(|v| {
+                    v.as_f64()
+                        .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+                })
                 .unwrap_or(0.0) as f32;
             is_batting = linescore
                 .get("isBatting")
@@ -637,7 +683,12 @@ fn extract_score_str(ball_data: &serde_json::Value) -> String {
                         .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
                 })
         })
-        .or_else(|| ball_data.get("overs").and_then(|v| v.as_f64()))
+        .or_else(|| {
+            ball_data.get("overs").and_then(|v| {
+                v.as_f64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+            })
+        })
         .unwrap_or(0.0);
 
     match (team_abbr.is_empty(), home_score.is_empty()) {
@@ -680,6 +731,34 @@ fn is_wide_delivery(ball_data: &serde_json::Value) -> bool {
     false
 }
 
+/// `shortText` wicket heuristic for payloads without the nested
+/// `dismissal.dismissal` flag. Reuses the `parse_batsman_from_text`
+/// keyword style (`c`, `b`, `lbw`, `run out`, `st`, `hit wicket`,
+/// `retired`) plus whole-word `out` / `stumped`.
+fn short_text_looks_like_wicket(short_text: &str) -> bool {
+    let lower = short_text.to_lowercase();
+    if lower
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .any(|w| w == "out" || w == "stumped")
+    {
+        return true;
+    }
+    for kw in [
+        " c ",
+        " lbw",
+        " b ",
+        " run out",
+        " st ",
+        " hit wicket",
+        " retired",
+    ] {
+        if lower.contains(kw) {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn parse_latest_event(
     value: &serde_json::Value,
     last_ball_id: &mut Option<String>,
@@ -701,7 +780,22 @@ pub fn parse_latest_event(
         }
     }
 
-    let latest_key_str = latest_key?.to_string();
+    // No numeric keys: fall back to the max lexicographic key (still
+    // skipping the placeholder stub) instead of returning None.
+    let latest_key_str = if let Some(n) = latest_key {
+        n.to_string()
+    } else {
+        let mut best: Option<&String> = None;
+        for key_str in commentaries.keys() {
+            if key_str == PLACEHOLDER_COMMENTARY_KEY {
+                continue;
+            }
+            if best.map_or(true, |b| key_str > b) {
+                best = Some(key_str);
+            }
+        }
+        best?.clone()
+    };
     let ball_data = commentaries.get(&latest_key_str)?;
 
     let is_new = match last_ball_id {
@@ -721,9 +815,16 @@ pub fn parse_latest_event(
     let score_str = extract_score_str(ball_data);
 
     let dismissal = ball_data.get("dismissal");
-    let is_dismissal = dismissal
+    let explicit_dismissal = dismissal
         .and_then(|d| d.get("dismissal").and_then(|v| v.as_bool()))
         .unwrap_or(false);
+    // Nested flag first; when absent, fall back to shortText wicket keywords.
+    let short_text = ball_data
+        .get("shortText")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let is_dismissal =
+        explicit_dismissal || (!explicit_dismissal && short_text_looks_like_wicket(short_text));
     if is_dismissal {
         // Structured name first, `shortText` fallback, sentinel last resort
         // so the popup never shows an empty title line.
@@ -957,6 +1058,19 @@ pub fn parse_soccer_matches(
     matches
 }
 
+/// Half-time-ish soccer detail check: `Half Time`, `Interval`, `Break`,
+/// or standalone `HT`. Mirrors cricket's Break arm so polls back off to
+/// 30s instead of hammering 3s through the interval.
+fn is_soccer_break_detail(detail: &str) -> bool {
+    let lower = detail.to_lowercase();
+    if lower.contains("half") || lower.contains("interval") || lower.contains("break") {
+        return true;
+    }
+    lower
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .any(|w| w == "ht")
+}
+
 pub fn parse_soccer_match_detail(
     value: &serde_json::Value,
     series_id: &str,
@@ -987,12 +1101,17 @@ pub fn parse_soccer_match_detail(
         .unwrap_or("")
         .to_string();
 
-    let status_enum = match state {
+    let mut status_enum = match state {
         "in" => MatchStatus::Live,
         "pre" => MatchStatus::Scheduled,
         "post" => MatchStatus::Completed,
         _ => MatchStatus::NoMatch,
     };
+
+    // Half-time-ish details back off to 30s polls, mirroring cricket's Break arm.
+    if status_enum == MatchStatus::Live && is_soccer_break_detail(&detail) {
+        status_enum = MatchStatus::Break;
+    }
 
     let competitors_arr = comp
         .get("competitors")
@@ -1112,15 +1231,20 @@ pub fn parse_soccer_latest_event(
     let key_events = value.get("keyEvents")?.as_array()?;
     let latest_event = key_events.last()?;
 
-    let event_id = latest_event.get("id")?.as_str()?;
+    // ESPN ids are usually strings but can arrive numeric: accept both.
+    let id_val = latest_event.get("id")?;
+    let event_id: String = match id_val.as_str() {
+        Some(s) => s.to_string(),
+        None => id_val.as_u64()?.to_string(),
+    };
 
     // First poll seeds dedup state and suppresses the stale event, mirroring
     // the cricket path — otherwise tracking a match mid-game replays the
     // last GOAL/RED as if it just happened.
     let is_new = match last_event_id {
-        Some(prev) => prev != event_id,
+        Some(prev) => prev != &event_id,
         None => {
-            *last_event_id = Some(event_id.to_string());
+            *last_event_id = Some(event_id.clone());
             false
         }
     };
@@ -1129,7 +1253,7 @@ pub fn parse_soccer_latest_event(
         return None;
     }
 
-    *last_event_id = Some(event_id.to_string());
+    *last_event_id = Some(event_id.clone());
 
     let type_obj = latest_event.get("type")?;
     let event_type_slug = type_obj.get("type")?.as_str()?.to_lowercase();
@@ -2076,5 +2200,341 @@ mod tests {
         });
         assert!(parse_latest_event(&json, &mut last).is_none());
         assert!(last.is_none());
+    }
+
+    #[test]
+    fn test_cricket_discovery_nested_status_objects() {
+        // Same fallback chain soccer uses: string first, then nested.
+        let json = serde_json::json!({
+            "sports": [{
+                "slug": "cricket",
+                "leagues": [{
+                    "id": "8048",
+                    "name": "World Cup",
+                    "events": [
+                        {
+                            "id": "1001",
+                            "status": { "type": { "state": "in" } },
+                            "name": "India vs Australia",
+                            "date": "2026-09-28T14:00Z",
+                            "competitors": [
+                                { "id": "6", "displayName": "India" },
+                                { "id": "2", "displayName": "Australia" }
+                            ]
+                        },
+                        {
+                            "id": "1002",
+                            "fullStatus": { "type": { "state": "pre" } },
+                            "name": "India vs England",
+                            "date": "2026-09-29T14:00Z",
+                            "competitors": [
+                                { "id": "99", "displayName": "India A" },
+                                { "id": "1", "displayName": "England" }
+                            ]
+                        },
+                        {
+                            "id": "1003",
+                            "status": { "type": { "state": "post" } },
+                            "name": "India vs Sri Lanka",
+                            "date": "2026-09-27T14:00Z",
+                            "competitors": [
+                                { "id": "6", "displayName": "India" },
+                                { "id": "8", "displayName": "Sri Lanka" }
+                            ]
+                        }
+                    ]
+                }]
+            }]
+        });
+        let out = parse_all_live_indian_matches(&json);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].1, "1001");
+        assert_eq!(out[0].3, "in");
+        assert_eq!(out[1].1, "1002");
+        assert_eq!(out[1].3, "pre");
+    }
+
+    #[test]
+    fn test_linescore_string_overs_accepted() {
+        // `overs` may arrive as a string ("14.2"), not just f64.
+        let json = serde_json::json!({
+            "header": {
+                "name": "India v Australia",
+                "description": "3rd T20I at Hyderabad",
+                "competitions": [{
+                    "limitedOvers": 20.0,
+                    "status": { "type": { "state": "in", "detail": "Live" } },
+                    "competitors": [
+                        {
+                            "team": { "id": "6", "displayName": "India", "abbreviation": "IND" },
+                            "score": "145/3",
+                            "linescores": [{
+                                "score": "145/3",
+                                "isCurrent": true,
+                                "runs": 145,
+                                "wickets": 3,
+                                "overs": "14.2",
+                                "isBatting": true
+                            }]
+                        },
+                        {
+                            "team": { "id": "2", "displayName": "Australia", "abbreviation": "AUS" },
+                            "score": "186/7",
+                            "linescores": [{
+                                "score": "186/7",
+                                "isCurrent": false,
+                                "runs": 186,
+                                "wickets": 7,
+                                "overs": 20.0,
+                                "isBatting": false
+                            }]
+                        }
+                    ]
+                }]
+            }
+        });
+        let score = parse_match_detail(&json, "14135", "1413511").expect("should parse");
+        assert!((score.team1.overs - 14.2).abs() < 0.001);
+        assert!((score.crr - 10.116).abs() < 0.02);
+    }
+
+    #[test]
+    fn test_soccer_numeric_event_ids_accepted() {
+        let mut last: Option<String> = None;
+        let json = serde_json::json!({
+            "header": { "competitions": [{ "competitors": [{ "score": "1" }, { "score": "0" }] }] },
+            "keyEvents": [{
+                "id": 12345,
+                "type": { "type": "goal" },
+                "scoringPlay": true,
+                "shortText": "Saka scores",
+                "clock": { "displayValue": "54'" }
+            }]
+        });
+        assert!(parse_soccer_latest_event(&json, &mut last).is_none());
+        assert_eq!(last, Some("12345".to_string()));
+
+        let json2 = serde_json::json!({
+            "header": { "competitions": [{ "competitors": [{ "score": "2" }, { "score": "0" }] }] },
+            "keyEvents": [
+                {
+                    "id": 12345,
+                    "type": { "type": "goal" },
+                    "scoringPlay": true,
+                    "shortText": "Saka scores",
+                    "clock": { "displayValue": "54'" }
+                },
+                {
+                    "id": 12346,
+                    "type": { "type": "goal" },
+                    "scoringPlay": true,
+                    "shortText": "Havertz scores",
+                    "clock": { "displayValue": "67'" }
+                }
+            ]
+        });
+        let event = parse_soccer_latest_event(&json2, &mut last).expect("numeric id emits");
+        assert_eq!(event.title, "GOAL!");
+        assert!(event.description.contains("Havertz"));
+        assert_eq!(last, Some("12346".to_string()));
+    }
+
+    #[test]
+    fn test_commentary_non_numeric_falls_back_to_max_lexicographic() {
+        // Zero numeric keys: max lexicographic key wins (placeholder skipped).
+        let mut last: Option<String> = None;
+        let json = serde_json::json!({
+            "header": {
+                "competitions": [{
+                    "commentaries": {
+                        "999999999999999": { "shortText": "stub" },
+                        "aaa": {
+                            "shortText": "10.1 dot ball",
+                            "homeScore": "100/1",
+                            "over": { "overs": 10.1 },
+                            "team": { "abbreviation": "IND" }
+                        },
+                        "zzz": {
+                            "shortText": "10.2 FOUR through covers!",
+                            "homeScore": "104/1",
+                            "scoreValue": 4,
+                            "boundary": true,
+                            "over": { "overs": 10.2 },
+                            "team": { "abbreviation": "IND" }
+                        }
+                    }
+                }]
+            }
+        });
+        assert!(parse_latest_event(&json, &mut last).is_none());
+        assert_eq!(last, Some("zzz".to_string()));
+
+        let json2 = serde_json::json!({
+            "header": {
+                "competitions": [{
+                    "commentaries": {
+                        "999999999999999": { "shortText": "stub" },
+                        "aaa": {
+                            "shortText": "10.1 dot ball",
+                            "homeScore": "100/1",
+                            "over": { "overs": 10.1 },
+                            "team": { "abbreviation": "IND" }
+                        },
+                        "zzz": {
+                            "shortText": "10.2 FOUR through covers!",
+                            "homeScore": "104/1",
+                            "scoreValue": 4,
+                            "boundary": true,
+                            "over": { "overs": 10.2 },
+                            "team": { "abbreviation": "IND" }
+                        },
+                        "zzz2": {
+                            "shortText": "10.3 SIX over long-on!",
+                            "homeScore": "110/1",
+                            "scoreValue": 6,
+                            "boundary": true,
+                            "over": { "overs": 10.3 },
+                            "team": { "abbreviation": "IND" }
+                        }
+                    }
+                }]
+            }
+        });
+        let event = parse_latest_event(&json2, &mut last).expect("lexicographic latest emits");
+        assert_eq!(event.title, "SIX!");
+        assert_eq!(last, Some("zzz2".to_string()));
+    }
+
+    #[test]
+    fn test_wicket_from_short_text_without_dismissal_flag() {
+        // No nested `dismissal` object: shortText keywords still fire.
+        let mut last: Option<String> = None;
+        let json = serde_json::json!({
+            "header": {
+                "competitions": [{
+                    "commentaries": {
+                        "111": {
+                            "shortText": "14.2 Starc to Kohli, OUT, c Smith b Starc",
+                            "homeScore": "145/3",
+                            "over": { "overs": 14.2 },
+                            "team": { "abbreviation": "IND" }
+                        }
+                    }
+                }]
+            }
+        });
+        assert!(parse_latest_event(&json, &mut last).is_none());
+        let json2 = serde_json::json!({
+            "header": {
+                "competitions": [{
+                    "commentaries": {
+                        "111": {
+                            "shortText": "14.2 Starc to Kohli, OUT, c Smith b Starc",
+                            "homeScore": "145/3",
+                            "over": { "overs": 14.2 },
+                            "team": { "abbreviation": "IND" }
+                        },
+                        "112": {
+                            "shortText": "14.3 Starc to Sharma, OUT, lbw!",
+                            "homeScore": "145/4",
+                            "over": { "overs": 14.3 },
+                            "team": { "abbreviation": "IND" }
+                        }
+                    }
+                }]
+            }
+        });
+        let event = parse_latest_event(&json2, &mut last).expect("shortText wicket emits");
+        assert_eq!(event.event_type, MatchEventType::Wicket);
+        assert_eq!(event.title, "Wicket!");
+    }
+
+    #[test]
+    fn test_india_filter_rest_of_blocklist_and_whole_word() {
+        // "Rest of India" domestic side must not leak through.
+        assert!(!is_india_side("99", "Rest of India"));
+        assert!(!is_india_side("100", "Rest of India Women"));
+        // Suffix sides still count.
+        assert!(is_india_side("99", "India A"));
+        assert!(is_india_side("99", "India Women"));
+        assert!(is_india_side("6", "India"));
+        // Whole-word: "Indiana" is not India.
+        assert!(!is_india_side("99", "Indiana"));
+        assert!(!is_india_side("99", "British Indian Ocean"));
+    }
+
+    #[test]
+    fn test_india_filter_blocks_rest_of_india_event() {
+        let json = serde_json::json!({
+            "sports": [{
+                "slug": "cricket",
+                "leagues": [{
+                    "id": "9999",
+                    "name": "Domestic",
+                    "events": [{
+                        "id": "555",
+                        "status": "in",
+                        "name": "Rest of India vs Vidarbha",
+                        "date": "2026-09-28T14:00Z",
+                        "competitors": [
+                            { "id": "500", "displayName": "Rest of India" },
+                            { "id": "501", "displayName": "Vidarbha" }
+                        ]
+                    }]
+                }]
+            }]
+        });
+        assert!(parse_all_live_indian_matches(&json).is_empty());
+    }
+
+    #[test]
+    fn test_soccer_half_time_maps_to_break() {
+        for detail in ["Half Time", "HT", "Half-Time Interval", "Half-time break"] {
+            let json = serde_json::json!({
+                "header": {
+                    "name": "Arsenal vs Chelsea",
+                    "competitions": [{
+                        "status": { "type": { "state": "in", "detail": detail } },
+                        "competitors": [
+                            {
+                                "team": { "id": "359", "displayName": "Arsenal", "abbreviation": "ARS" },
+                                "score": "1",
+                                "winner": false
+                            },
+                            {
+                                "team": { "id": "363", "displayName": "Chelsea", "abbreviation": "CHE" },
+                                "score": "1",
+                                "winner": false
+                            }
+                        ]
+                    }]
+                }
+            });
+            let score = parse_soccer_match_detail(&json, "eng.1", "700100").expect("should parse");
+            assert_eq!(score.status, MatchStatus::Break, "detail={}", detail);
+        }
+        // Live clock still maps to Live.
+        let json = serde_json::json!({
+            "header": {
+                "name": "Arsenal vs Chelsea",
+                "competitions": [{
+                    "status": { "type": { "state": "in", "detail": "68'" } },
+                    "competitors": [
+                        {
+                            "team": { "id": "359", "displayName": "Arsenal", "abbreviation": "ARS" },
+                            "score": "2",
+                            "winner": false
+                        },
+                        {
+                            "team": { "id": "363", "displayName": "Chelsea", "abbreviation": "CHE" },
+                            "score": "1",
+                            "winner": false
+                        }
+                    ]
+                }]
+            }
+        });
+        let score = parse_soccer_match_detail(&json, "eng.1", "700100").expect("should parse");
+        assert_eq!(score.status, MatchStatus::Live);
     }
 }

@@ -1,18 +1,19 @@
 //! SportsPulse — Win11 Dark Theme Direct2D/DirectWrite Layered Scoreboard Renderer.
 //! Pixel flow: D2D -> WIC bitmap -> CopyPixels -> DIB -> UpdateLayeredWindow.
-//! Windows 11 Fluent Geometry: SOLID opaque #202020 background, #2D2D2D surfaces, 16px corner radius, bold typography.
+//! Windows 11 Fluent Geometry: SOLID opaque #1C1C1C background, #2D2D2D surfaces, 16px corner radius, bold typography.
 //! Overlay logic: cricket stacked scorecard vs football broadcast bar, status badges, CRR/RRR/Need/Target rules.
 
 #![allow(dead_code)]
 
 use std::cell::RefCell;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use windows::core::*;
-use windows::Win32::Foundation::{BOOL, COLORREF, E_FAIL, HWND, POINT, SIZE};
+use windows::Win32::Foundation::{
+    BOOL, COLORREF, D2DERR_RECREATE_TARGET, E_FAIL, HWND, POINT, SIZE,
+};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_POINT_2F, D2D_RECT_F,
 };
@@ -32,9 +33,9 @@ use windows::Win32::Graphics::DirectWrite::{
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetSysColor, GetWindowDC,
-    ReleaseDC, SelectObject, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-    BLENDFUNCTION, COLOR_WINDOW, COLOR_WINDOWTEXT, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
+    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetWindowDC, ReleaseDC,
+    SelectObject, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION,
+    DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
 };
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_WICPixelFormat32bppPBGRA, IWICBitmap, IWICImagingFactory,
@@ -101,15 +102,14 @@ pub fn ui_text(s: &str, max_chars: usize) -> String {
 /// (SPI_GETCLIENTAREAANIMATION). Callers swap the spinner / flash timers for
 /// a static ring + persistent card. Throttled to avoid per-frame syscalls.
 pub fn reduced_motion() -> bool {
-    static CACHE: AtomicU64 = AtomicU64::new(0);
-    let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(d) => d.as_secs(),
-        Err(_) => 0,
-    };
-    let packed = CACHE.load(Ordering::Relaxed);
-    let last_time = packed >> 1;
-    if now.saturating_sub(last_time) < 2 {
-        return (packed & 1) != 0;
+    static CACHE: OnceLock<std::sync::Mutex<(Option<Instant>, bool)>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new((None, false)));
+    if let Ok(guard) = cache.lock() {
+        if let (Some(last), val) = (guard.0, guard.1) {
+            if last.elapsed() < Duration::from_secs(2) {
+                return val;
+            }
+        }
     }
     let res = unsafe {
         let mut enabled = BOOL(1);
@@ -126,23 +126,25 @@ pub fn reduced_motion() -> bool {
             false
         }
     };
-    CACHE.store((now << 1) | (if res { 1 } else { 0 }), Ordering::Relaxed);
+    if let Ok(mut guard) = cache.lock() {
+        guard.0 = Some(Instant::now());
+        guard.1 = res;
+    }
     res
 }
 
-/// High-contrast: SPI_GETHIGHCONTRAST (HIGHCONTRASTF_ON), with a GetSysColor
-/// black/white-inversion sniff as fallback. Callers switch to 2px borders
-/// (surfaces are already opaque). Throttled to avoid per-frame syscalls.
+/// High-contrast: SPI_GETHIGHCONTRAST (HIGHCONTRASTF_ON) only — no color
+/// sniffing (it false-positives on stock light Windows). Callers switch to
+/// 2px borders (surfaces are already opaque). Throttled to avoid per-frame syscalls.
 pub fn high_contrast() -> bool {
-    static CACHE: AtomicU64 = AtomicU64::new(0);
-    let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(d) => d.as_secs(),
-        Err(_) => 0,
-    };
-    let packed = CACHE.load(Ordering::Relaxed);
-    let last_time = packed >> 1;
-    if now.saturating_sub(last_time) < 2 {
-        return (packed & 1) != 0;
+    static CACHE: OnceLock<std::sync::Mutex<(Option<Instant>, bool)>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new((None, false)));
+    if let Ok(guard) = cache.lock() {
+        if let (Some(last), val) = (guard.0, guard.1) {
+            if last.elapsed() < Duration::from_secs(2) {
+                return val;
+            }
+        }
     }
     let res = unsafe {
         #[repr(C)]
@@ -164,16 +166,16 @@ pub fn high_contrast() -> bool {
             SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
         )
         .is_ok()
-            && hc.flags & HCF_ON != 0
         {
-            true
+            hc.flags & HCF_ON != 0
         } else {
-            let bg = GetSysColor(COLOR_WINDOW);
-            let fg = GetSysColor(COLOR_WINDOWTEXT);
-            (bg == 0x00FF_FFFF && fg == 0x0000_0000) || (bg == 0x0000_0000 && fg == 0x00FF_FFFF)
+            false
         }
     };
-    CACHE.store((now << 1) | (if res { 1 } else { 0 }), Ordering::Relaxed);
+    if let Ok(mut guard) = cache.lock() {
+        guard.0 = Some(Instant::now());
+        guard.1 = res;
+    }
     res
 }
 
@@ -510,7 +512,6 @@ pub struct Brushes {
     pub blue_badge_bg: ID2D1SolidColorBrush,
     pub purple_accent: ID2D1SolidColorBrush,
     pub purple_badge_bg: ID2D1SolidColorBrush,
-    pub gold_accent: ID2D1SolidColorBrush,
 }
 
 impl Brushes {
@@ -532,7 +533,6 @@ impl Brushes {
             blue_badge_bg: rt.CreateSolidColorBrush(&color(0.353, 0.608, 0.835, 0.15), None)?,
             purple_accent: rt.CreateSolidColorBrush(&color(0.82, 0.60, 1.0, 1.0), None)?,
             purple_badge_bg: rt.CreateSolidColorBrush(&color(0.22, 0.07, 0.36, 1.0), None)?,
-            gold_accent: rt.CreateSolidColorBrush(&color(0.941, 0.706, 0.161, 1.0), None)?, // #F0B429
         })
     }
 }
@@ -672,8 +672,6 @@ pub struct Renderer {
     brushes: Brushes,
     formats: Formats,
     event_flash: Option<FlashState>,
-    // Persistent pixel scratch buffer: avoids a ~432KB alloc + double copy per present.
-    buf: Vec<u8>,
     // Reused info-line parts (CRR/RRR/need/target, max 4 short Strings):
     // avoids a per-present Vec alloc on the live-tick path. Joined string is
     // still allocated per frame but bounded (< 200 chars, tiny vs the frame).
@@ -684,6 +682,9 @@ pub struct Renderer {
 
 impl Renderer {
     pub unsafe fn new(hwnd: HWND, w: u32, h: u32) -> Result<Self> {
+        if w == 0 || h == 0 {
+            return Err(Error::from_win32());
+        }
         let factory = d2d_factory()?;
         let dwrite = dwrite_factory()?;
         let wicf: IWICImagingFactory =
@@ -694,6 +695,11 @@ impl Renderer {
 
         let rt = factory.CreateWicBitmapRenderTarget(&wic, &software_rt_props())?;
         rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+
+        // Fallible D2D objects before any GDI allocation: a brush/format ?
+        // returns with nothing to leak.
+        let brushes = Brushes::create(&rt)?;
+        let formats = Formats::create(&dwrite)?;
 
         let screen_dc = GetWindowDC(None);
         if screen_dc.is_invalid() {
@@ -715,15 +721,28 @@ impl Renderer {
         bmi.bmiHeader.biCompression = BI_RGB.0;
 
         let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
-        let hbmp = CreateDIBSection(mem_dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)?;
+        let hbmp = match CreateDIBSection(mem_dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0) {
+            Ok(h) => h,
+            Err(e) => {
+                let _ = DeleteDC(mem_dc);
+                return Err(e);
+            }
+        };
         if hbmp.is_invalid() {
             let _ = DeleteDC(mem_dc);
             return Err(Error::from_win32());
         }
+        if bits.is_null() {
+            let _ = DeleteObject(hbmp);
+            let _ = DeleteDC(mem_dc);
+            return Err(Error::from_win32());
+        }
         let old_bmp = SelectObject(mem_dc, hbmp);
-
-        let brushes = Brushes::create(&rt)?;
-        let formats = Formats::create(&dwrite)?;
+        if old_bmp.is_invalid() {
+            let _ = DeleteObject(hbmp);
+            let _ = DeleteDC(mem_dc);
+            return Err(Error::from_win32());
+        }
 
         Ok(Self {
             hwnd,
@@ -740,7 +759,6 @@ impl Renderer {
             brushes,
             formats,
             event_flash: None,
-            buf: Vec::new(),
             info_parts_scratch: Vec::new(),
             _no_send: PhantomData,
         })
@@ -756,17 +774,12 @@ impl Renderer {
 
     /// Rebuild only the WIC bitmap / render target / brushes / DIB on resize.
     /// Factories (D2D/DWrite globals, per-renderer WIC) and mem_dc are reused.
+    /// Atomic: new WIC/RT/brushes/DIB are built in locals and committed to
+    /// self only on success, so a mid-resize failure never leaves a deleted
+    /// handle or dangling bits pointer in self.
     pub unsafe fn resize(&mut self, new_w: u32, new_h: u32) -> Result<()> {
         if self.w == new_w as i32 && self.h == new_h as i32 {
             return Ok(());
-        }
-
-        // Park the previously selected bitmap; deleting a selected GDI object is a no-op leak.
-        if !self.mem_dc.is_invalid() {
-            let _ = SelectObject(self.mem_dc, self.old_bmp);
-        }
-        if !self.hbmp.is_invalid() {
-            let _ = DeleteObject(self.hbmp);
         }
 
         let factory = d2d_factory()?;
@@ -782,18 +795,21 @@ impl Renderer {
         let d = if self.dpi == 0 { 96.0 } else { self.dpi as f32 };
         rt.SetDpi(d, d);
 
-        // Reuse mem_dc across resizes; recreate only if it was lost.
-        if self.mem_dc.is_invalid() {
+        // Build the new DIB against a local DC; only commit mem_dc on success.
+        let mut mem_dc = self.mem_dc;
+        let mut created_dc = false;
+        if mem_dc.is_invalid() {
             let screen_dc = GetWindowDC(None);
             if screen_dc.is_invalid() {
                 return Err(Error::from_win32());
             }
-            let mem_dc = CreateCompatibleDC(screen_dc);
+            let nd = CreateCompatibleDC(screen_dc);
             let _ = ReleaseDC(None, screen_dc);
-            if mem_dc.is_invalid() {
+            if nd.is_invalid() {
                 return Err(Error::from_win32());
             }
-            self.mem_dc = mem_dc;
+            mem_dc = nd;
+            created_dc = true;
         }
 
         let mut bmi = BITMAPINFO::default();
@@ -805,21 +821,54 @@ impl Renderer {
         bmi.bmiHeader.biCompression = BI_RGB.0;
 
         let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
-        let hbmp = CreateDIBSection(self.mem_dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)?;
-        if hbmp.is_invalid() {
-            return Err(Error::from_win32());
-        }
-        self.old_bmp = SelectObject(self.mem_dc, hbmp);
+        let hbmp_result = CreateDIBSection(mem_dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0);
+        let hbmp = match hbmp_result {
+            Ok(h) if !h.is_invalid() => h,
+            Ok(_) => {
+                if created_dc {
+                    let _ = DeleteDC(mem_dc);
+                }
+                return Err(Error::from_win32());
+            }
+            Err(e) => {
+                if created_dc {
+                    let _ = DeleteDC(mem_dc);
+                }
+                return Err(e);
+            }
+        };
+        let brushes = match Brushes::create(&rt) {
+            Ok(b) => b,
+            Err(e) => {
+                let _ = DeleteObject(hbmp);
+                if created_dc {
+                    let _ = DeleteDC(mem_dc);
+                }
+                return Err(e);
+            }
+        };
 
-        self.brushes = Brushes::create(&rt)?;
+        // All fallible work succeeded: commit. Park the old bitmap, delete it,
+        // then select the new one.
+        if !self.mem_dc.is_invalid() {
+            let _ = SelectObject(self.mem_dc, self.old_bmp);
+        }
+        if !self.hbmp.is_invalid() {
+            let _ = DeleteObject(self.hbmp);
+        }
+        let new_old = SelectObject(mem_dc, hbmp);
+        if created_dc {
+            self.mem_dc = mem_dc;
+        }
+
+        self.brushes = brushes;
         self.wic = wic;
         self.rt = rt;
         self.hbmp = hbmp;
+        self.old_bmp = new_old;
         self.bits = bits;
         self.w = new_w as i32;
         self.h = new_h as i32;
-        // Force the persistent buffer back to the new footprint on next present.
-        self.buf.clear();
 
         Ok(())
     }
@@ -827,11 +876,18 @@ impl Renderer {
     /// Force a full rebuild at the current size (D2DERR_RECREATE_TARGET
     /// recovery). resize() intentionally no-ops on identical dims, so device-
     /// lost recovery needs this explicit path; caller retries present() once.
+    /// Restores w/h if the rebuild fails so self stays consistent (resize
+    /// itself is atomic and leaves GDI state untouched on failure).
     pub unsafe fn recreate(&mut self) -> Result<()> {
         let (w, h) = (self.w, self.h);
         self.w = 0;
         self.h = 0;
-        self.resize(w as u32, h as u32)
+        if let Err(e) = self.resize(w as u32, h as u32) {
+            self.w = w;
+            self.h = h;
+            return Err(e);
+        }
+        Ok(())
     }
 
     pub fn set_event_flash(&mut self, event: Option<MatchEvent>) {
@@ -847,7 +903,23 @@ impl Renderer {
     }
 
     /// Present dynamic `Option<MatchScore>` with cricket/soccer layout and Win11 theme.
+    /// On D2DERR_RECREATE_TARGET from EndDraw, recreates and retries once
+    /// (same policy as the popup/dashboard callers).
     pub unsafe fn present(&mut self, pos: &POINT, score: &Option<MatchScore>) -> Result<()> {
+        match self.present_once(pos, score) {
+            Ok(()) => Ok(()),
+            Err(e) if e.code() == D2DERR_RECREATE_TARGET => {
+                dbglog(&format!(
+                    "EndDraw RECREATE_TARGET: recreating, retrying once: {e}"
+                ));
+                self.recreate()?;
+                self.present_once(pos, score)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    unsafe fn present_once(&mut self, pos: &POINT, score: &Option<MatchScore>) -> Result<()> {
         if let Some(flash) = self.event_flash.as_ref() {
             if flash.started.elapsed() >= flash_ttl(&flash.event) {
                 self.event_flash = None;
@@ -856,11 +928,15 @@ impl Renderer {
 
         let size = self.rt.GetSize();
         let (w, h) = (size.width, size.height);
+        // Centered strokes overhang the rect edge by border_w/2, so inset the
+        // card rect to keep the full 1-2px border visible inside the bitmap.
+        let border_w = if high_contrast() { 2.0 } else { 1.0 };
+        let inset = border_w / 2.0;
         let full = D2D_RECT_F {
-            left: 0.0,
-            top: 0.0,
-            right: w,
-            bottom: h,
+            left: inset,
+            top: inset,
+            right: (w - inset).max(inset),
+            bottom: (h - inset).max(inset),
         };
 
         self.rt.BeginDraw();
@@ -881,7 +957,6 @@ impl Renderer {
             radiusY: card_radius,
         };
         self.rt.FillRoundedRectangle(&rr, &self.brushes.bg);
-        let border_w = if high_contrast() { 2.0 } else { 1.0 };
         self.rt
             .DrawRoundedRectangle(&rr, &self.brushes.border, border_w, None);
 
@@ -902,8 +977,7 @@ impl Renderer {
 
         if scoreboard_visible {
             if let Some(flash) = self.event_flash.as_ref() {
-                let event = flash.event.clone();
-                self.render_event_flash(w, h, &event);
+                self.render_event_flash(w, h, &flash.event, card_radius);
             }
         }
 
@@ -924,7 +998,7 @@ impl Renderer {
         let title_rect = D2D_RECT_F {
             left: 14.0,
             top: 10.0,
-            right: badge_left - 8.0,
+            right: (badge_left - 8.0).max(14.0),
             bottom: 24.0,
         };
         self.formats.title.text(
@@ -956,7 +1030,7 @@ impl Renderer {
         let t1_name_rect = D2D_RECT_F {
             left: 14.0,
             top: 28.0,
-            right: t1_score_rect.left - 8.0,
+            right: (t1_score_rect.left - 8.0).max(14.0),
             bottom: 48.0,
         };
         self.formats.team_name.text(
@@ -974,7 +1048,7 @@ impl Renderer {
                 radiusX: 3.0,
                 radiusY: 3.0,
             };
-            self.rt.FillEllipse(&dot, &self.brushes.gold_accent);
+            self.rt.FillEllipse(&dot, &self.brushes.amber_accent);
         }
 
         // Row 2: Team 2 (y: 50.0 to 70.0)
@@ -998,7 +1072,7 @@ impl Renderer {
         let t2_name_rect = D2D_RECT_F {
             left: 14.0,
             top: 50.0,
-            right: t2_score_rect.left - 8.0,
+            right: (t2_score_rect.left - 8.0).max(14.0),
             bottom: 70.0,
         };
         self.formats.team_name.text(
@@ -1016,7 +1090,7 @@ impl Renderer {
                 radiusX: 3.0,
                 radiusY: 3.0,
             };
-            self.rt.FillEllipse(&dot, &self.brushes.gold_accent);
+            self.rt.FillEllipse(&dot, &self.brushes.amber_accent);
         }
 
         // 3. Stats Bar (y: 74.0 to 104.0)
@@ -1049,7 +1123,7 @@ impl Renderer {
             let left_rect = D2D_RECT_F {
                 left: 14.0,
                 top: 76.0,
-                right: w - 14.0 - target_w,
+                right: (w - 14.0 - target_w).max(14.0),
                 bottom: h - 4.0,
             };
             self.formats.info.text(
@@ -1132,7 +1206,7 @@ impl Renderer {
         let t1_rect = D2D_RECT_F {
             left: 14.0,
             top: 0.0,
-            right: s1_rect.left - 6.0,
+            right: (s1_rect.left - 6.0).max(14.0),
             bottom: h,
         };
         self.formats.team_name_right.text(
@@ -1145,10 +1219,11 @@ impl Renderer {
         let t2_rect = D2D_RECT_F {
             left: s2_rect.right + 6.0,
             top: 0.0,
-            right: w - 14.0,
+            right: (w - 14.0).max(s2_rect.right + 6.0),
             bottom: h,
         };
-        self.formats.team_name.text(
+        // Symmetry: both soccer names 12px semi-bold, mirrored alignment (left trailing / right leading).
+        self.formats.score_medium.text(
             &self.rt,
             &ui_text(&t2_name, 12),
             &t2_rect,
@@ -1162,7 +1237,7 @@ impl Renderer {
         let text_h = 16.0;
         let gap = 6.0;
         let total_h = icon_h + gap + text_h;
-        let start_y = (h - total_h) / 2.0;
+        let start_y = ((h - total_h) / 2.0).max(0.0);
 
         let icon_rect = D2D_RECT_F {
             left: 0.0,
@@ -1220,10 +1295,11 @@ impl Renderer {
         };
 
         let bw = (text.chars().count() as f32 * 6.5 + 14.0).clamp(38.0, 72.0);
+        let right = (w - 14.0).max(0.0);
         let badge_rect = D2D_RECT_F {
-            left: w - 14.0 - bw,
+            left: (right - bw).max(0.0),
             top,
-            right: w - 14.0,
+            right,
             bottom: top + 16.0,
         };
         let badge_rr = D2D1_ROUNDED_RECT {
@@ -1238,7 +1314,7 @@ impl Renderer {
         badge_rect.left
     }
 
-    unsafe fn render_event_flash(&self, w: f32, h: f32, event: &MatchEvent) {
+    unsafe fn render_event_flash(&self, w: f32, h: f32, event: &MatchEvent, card_radius: f32) {
         let kind = classify_flash(event);
         let (bg, fg) = match kind {
             FlashKind::Goal => (&self.brushes.amber_badge_bg, &self.brushes.amber_accent),
@@ -1250,26 +1326,33 @@ impl Renderer {
             FlashKind::Win => (&self.brushes.purple_badge_bg, &self.brushes.purple_accent),
         };
 
+        // Same inset rule as the card rect: the 2px centered stroke overhangs
+        // by 1px, so inset to keep the full border visible inside the bitmap.
+        // card_radius is passed in from present() so card and flash can never diverge.
         let border = D2D_RECT_F {
-            left: 0.0,
-            top: 0.0,
-            right: w,
-            bottom: h,
+            left: 1.0,
+            top: 1.0,
+            right: (w - 1.0).max(1.0),
+            bottom: (h - 1.0).max(1.0),
         };
-        let flash_radius = if h <= 45.0 { 8.0 } else { 10.0 };
         let border_rr = D2D1_ROUNDED_RECT {
             rect: border,
-            radiusX: flash_radius,
-            radiusY: flash_radius,
+            radiusX: card_radius,
+            radiusY: card_radius,
         };
         self.rt.DrawRoundedRectangle(&border_rr, fg, 2.0, None);
 
+        if h < 60.0 {
+            return;
+        }
         let banner_h = if h <= 110.0 { 26.0 } else { 32.0 };
+        let banner_top = (h - banner_h - 10.0).max(0.0);
+        let banner_bottom = (h - 10.0).max(banner_top);
         let banner = D2D_RECT_F {
             left: 12.0,
-            top: h - banner_h - 10.0,
-            right: w - 12.0,
-            bottom: h - 10.0,
+            top: banner_top,
+            right: (w - 12.0).max(12.0),
+            bottom: banner_bottom,
         };
         let banner_rr = D2D1_ROUNDED_RECT {
             rect: banner,
@@ -1279,8 +1362,7 @@ impl Renderer {
         self.rt.FillRoundedRectangle(&banner_rr, bg);
 
         let detail = clean_event_detail(&event.description, event.event_type);
-        // Icon twin for the color flash: glyphs picked from Segoe UI coverage
-        // (the overlay has no emoji font; popup badges carry the emoji icons).
+        // Icon twin for the color flash.
         let glyph = match kind {
             FlashKind::Goal => "●",
             FlashKind::Four => "▲",
@@ -1306,12 +1388,24 @@ impl Renderer {
     }
 
     unsafe fn flush_to_layered_window(&mut self, pos: &POINT) -> Result<()> {
-        let row_pitch = self.w as usize * 4;
-        let total_bytes = row_pitch * self.h as usize;
-        debug_assert_eq!(row_pitch, self.w as usize * 4);
+        // Degenerate state (failed recreate) is an error like popup/dashboard,
+        // so callers apply the recreate+retry policy instead of silently
+        // presenting nothing.
+        if self.w <= 0 || self.h <= 0 || self.bits.is_null() {
+            return Err(E_FAIL.into());
+        }
+        let w = self.w as usize;
+        let h = self.h as usize;
+        let row_pitch = w.checked_mul(4).ok_or_else(|| -> Error { E_FAIL.into() })?;
+        let total_bytes = row_pitch
+            .checked_mul(h)
+            .ok_or_else(|| -> Error { E_FAIL.into() })?;
+        if total_bytes == 0 {
+            return Ok(());
+        }
+        let stride = u32::try_from(row_pitch).map_err(|_| -> Error { E_FAIL.into() })?;
         let dib_slice = std::slice::from_raw_parts_mut(self.bits as *mut u8, total_bytes);
-        self.wic
-            .CopyPixels(std::ptr::null(), row_pitch as u32, dib_slice)?;
+        self.wic.CopyPixels(std::ptr::null(), stride, dib_slice)?;
 
         let size = SIZE {
             cx: self.w,

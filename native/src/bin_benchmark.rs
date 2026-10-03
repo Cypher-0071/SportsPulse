@@ -457,7 +457,7 @@ Total: 1 process, {score_priv_b} B Private Commit, {score_ws_b} B Working Set
 The pure native Win32 rewrite completely eliminates the WebView2 / Chromium engine overhead, delivering:
 1. **~{priv_reduction:.1}% Private RAM Reduction** (down from ~395 MB to ~{score_priv_mb:.1} MB).
 2. **True Single-Process Execution** (1 process vs. 12 processes).
-3. **Sub-35ms Launch Latency** (instant desktop overlay appearance).
+3. **{first_win_ms:.1}ms Launch Latency** (measured cold start to first visible frame).
 4. **Flawless Windows 11 Dark Theme Integration** (16px rounded corners, Segoe UI Variable typography, and responsive Maximize/Restore window controls).
 "#,
             score_priv_b = mem_score_shown.private_commit,

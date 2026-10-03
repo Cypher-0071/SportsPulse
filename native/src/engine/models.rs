@@ -38,11 +38,6 @@ impl SportType {
         }
     }
 
-    /// Alias kept for the audit wording (`sport_as_str`); identical to `as_str`.
-    pub fn sport_as_str(self) -> &'static str {
-        self.as_str()
-    }
-
     /// Parse a slug back into `SportType`. Accepts `"cricket"` and
     /// `"soccer"`/`"football"` (dashboard labels football, ESPN uses soccer).
     /// Returns `None` for anything else so callers reject invalid selections

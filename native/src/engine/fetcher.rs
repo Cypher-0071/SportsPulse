@@ -59,6 +59,65 @@ fn any_scoreboard_fetch_ok<T: AsRef<[bool]>>(flags: T) -> bool {
     flags.as_ref().iter().any(|&ok| ok)
 }
 
+/// `%Y%m` window for next-month league scoreboards, derived from the
+/// first of next month (not `now + 20d`, which stays in-month early on).
+fn next_month_ym_for_year_month(year: i32, month: u32) -> String {
+    let (y, m) = if month >= 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
+    format!("{:04}{:02}", y, m)
+}
+
+fn next_month_ym(now: chrono::DateTime<chrono::Utc>) -> String {
+    use chrono::Datelike;
+    next_month_ym_for_year_month(now.year(), now.month())
+}
+
+/// Partial-outage merge: `None` means that sport's fetch group returned
+/// no data, so keep the previous slice for that sport instead of wiping
+/// it. `Some(vec)` replaces that sport's slice (even when empty).
+fn merge_discovered_per_sport(
+    prev: &[DiscoveredMatch],
+    fresh_cricket: Option<Vec<DiscoveredMatch>>,
+    fresh_soccer: Option<Vec<DiscoveredMatch>>,
+) -> Vec<DiscoveredMatch> {
+    let mut out = Vec::new();
+    match fresh_cricket {
+        Some(v) => out.extend(v),
+        None => out.extend(
+            prev.iter()
+                .filter(|d| d.sport == SportType::Cricket)
+                .cloned(),
+        ),
+    }
+    match fresh_soccer {
+        Some(v) => out.extend(v),
+        None => out.extend(
+            prev.iter()
+                .filter(|d| d.sport == SportType::Soccer)
+                .cloned(),
+        ),
+    }
+    out
+}
+
+/// Identity projection for discovery re-fire: only (sport, series_id,
+/// match_id, status) counts. Title/league/start-time text flips must not
+/// re-present the dashboard every 60s.
+fn discovery_identity_changed(prev: &[ActiveMatchEntry], next: &[ActiveMatchEntry]) -> bool {
+    if prev.len() != next.len() {
+        return true;
+    }
+    for (a, b) in prev.iter().zip(next.iter()) {
+        if a.0 != b.0 || a.1 != b.1 || a.2 != b.2 || a.4 != b.4 {
+            return true;
+        }
+    }
+    false
+}
+
 fn capped_backoff(failures: u32) -> Duration {
     match failures {
         0 | 1 => Duration::from_secs(5),
@@ -84,6 +143,23 @@ async fn fetch_json_capped(client: &Client, url: &str) -> Option<serde_json::Val
             return None;
         }
     };
+    // Pre-buffer cap: skip oversized bodies without loading 10MB into RAM.
+    // The post-buffer length check below stays as backstop (no header / lying header).
+    if let Some(len) = resp
+        .headers()
+        .get(reqwest::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<usize>().ok())
+    {
+        if len > MAX_BODY_BYTES {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[WARN] scoreboard Content-Length too large ({} bytes), skipping",
+                len
+            );
+            return None;
+        }
+    }
     let bytes = match resp.bytes().await {
         Ok(b) => b,
         Err(_e) => {
@@ -175,11 +251,10 @@ pub async fn start_polling(
         let should_fetch_scoreboard =
             last_scoreboard_fetch.map_or(true, |t| t.elapsed() >= Duration::from_secs(60));
         if should_fetch_scoreboard {
-            let mut discovered_matches: Vec<DiscoveredMatch> = Vec::new();
             let now = chrono::Utc::now();
             let today_str = now.format("%Y%m%d").to_string();
-            let next_month_date = now + chrono::Duration::days(20);
-            let next_month_str = next_month_date.format("%Y%m").to_string();
+            // First-of-next-month `%Y%m` window for upcoming league fixtures.
+            let next_month_window = next_month_ym(now);
 
             let cricket_default_url = "https://site.web.api.espn.com/apis/personalized/v2/scoreboard/header?sport=cricket&region=in";
             let cricket_today_url = format!("https://site.web.api.espn.com/apis/personalized/v2/scoreboard/header?sport=cricket&region=in&dates={}", today_str);
@@ -188,19 +263,19 @@ pub async fn start_polling(
 
             let eng_next_url = format!(
                 "https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard?dates={}",
-                next_month_str
+                next_month_window
             );
             let esp_next_url = format!(
                 "https://site.api.espn.com/apis/site/v2/sports/soccer/esp.1/scoreboard?dates={}",
-                next_month_str
+                next_month_window
             );
             let ita_next_url = format!(
                 "https://site.api.espn.com/apis/site/v2/sports/soccer/ita.1/scoreboard?dates={}",
-                next_month_str
+                next_month_window
             );
             let ger_next_url = format!(
                 "https://site.api.espn.com/apis/site/v2/sports/soccer/ger.1/scoreboard?dates={}",
-                next_month_str
+                next_month_window
             );
 
             let (
@@ -237,12 +312,11 @@ pub async fn start_polling(
                 fetch_json_capped(&client, &ger_next_url)
             );
 
-            // P1-2: total-outage guard. All failed means no fresh data:
-            // keep the previous list and emit nothing so the dashboard
-            // never flickers to empty.
-            let scoreboard_ok = any_scoreboard_fetch_ok([
-                cricket_default_json.is_some(),
-                cricket_today_json.is_some(),
+            // Per-sport outage gates: only the sport whose fetch group
+            // returned data replaces its slice. A soccer-only outage keeps
+            // cricket entries (and vice versa) instead of wiping them.
+            let cricket_ok = cricket_default_json.is_some() || cricket_today_json.is_some();
+            let soccer_ok = any_scoreboard_fetch_ok([
                 soccer_global_json.is_some(),
                 ucl_json.is_some(),
                 uel_json.is_some(),
@@ -257,75 +331,120 @@ pub async fn start_polling(
                 ita_next_json.is_some(),
                 ger_next_json.is_some(),
             ]);
+            let scoreboard_ok = cricket_ok || soccer_ok;
             if !scoreboard_ok {
                 #[cfg(debug_assertions)]
                 eprintln!("[WARN] all scoreboard fetches failed, keeping previous list");
                 last_scoreboard_fetch = Some(std::time::Instant::now());
             } else {
-                // 1. Cricket Scoreboards
-                let mut cricket_matches = Vec::new();
-                if let Some(json) = cricket_default_json.as_ref() {
-                    cricket_matches.extend(parse_all_live_indian_matches(json));
-                }
-                if let Some(json) = cricket_today_json.as_ref() {
-                    cricket_matches.extend(parse_all_live_indian_matches(json));
-                }
+                // 1. Cricket Scoreboards (only when this sport fetched OK).
+                let fresh_cricket: Option<Vec<DiscoveredMatch>> = if cricket_ok {
+                    let mut cricket_matches = Vec::new();
+                    if let Some(json) = cricket_default_json.as_ref() {
+                        cricket_matches.extend(parse_all_live_indian_matches(json));
+                    }
+                    if let Some(json) = cricket_today_json.as_ref() {
+                        cricket_matches.extend(parse_all_live_indian_matches(json));
+                    }
 
-                cricket_matches.sort_by(|a, b| a.1.cmp(&b.1));
-                cricket_matches.dedup_by_key(|m| m.1.clone());
+                    cricket_matches.sort_by(|a, b| a.1.cmp(&b.1));
+                    cricket_matches.dedup_by_key(|m| m.1.clone());
 
-                for (series_id, match_id, title, status, league_name, start_time) in cricket_matches
-                {
-                    discovered_matches.push(DiscoveredMatch {
-                        sport: SportType::Cricket,
-                        series_id,
-                        match_id,
-                        title,
-                        status,
-                        league_name,
-                        start_time,
-                    });
-                }
+                    Some(
+                        cricket_matches
+                            .into_iter()
+                            .map(
+                                |(series_id, match_id, title, status, league_name, start_time)| {
+                                    DiscoveredMatch {
+                                        sport: SportType::Cricket,
+                                        series_id,
+                                        match_id,
+                                        title,
+                                        status,
+                                        league_name,
+                                        start_time,
+                                    }
+                                },
+                            )
+                            .collect(),
+                    )
+                } else {
+                    None
+                };
 
-                // 2. Soccer Scoreboards
-                let mut soccer_matches = Vec::new();
-                if let Some(json) = soccer_global_json.as_ref() {
-                    soccer_matches.extend(parse_soccer_matches(json));
-                }
-                for json_opt in [
-                    &ucl_json,
-                    &uel_json,
-                    &isl_json,
-                    &eng_json,
-                    &esp_json,
-                    &ita_json,
-                    &ger_json,
-                    &fra_json,
-                    &eng_next_json,
-                    &esp_next_json,
-                    &ita_next_json,
-                    &ger_next_json,
-                ] {
-                    if let Some(json) = json_opt.as_ref() {
+                // 2. Soccer Scoreboards (only when this sport fetched OK).
+                let fresh_soccer: Option<Vec<DiscoveredMatch>> = if soccer_ok {
+                    let mut soccer_matches = Vec::new();
+                    if let Some(json) = soccer_global_json.as_ref() {
                         soccer_matches.extend(parse_soccer_matches(json));
                     }
-                }
+                    for json_opt in [
+                        &ucl_json,
+                        &uel_json,
+                        &isl_json,
+                        &eng_json,
+                        &esp_json,
+                        &ita_json,
+                        &ger_json,
+                        &fra_json,
+                        &eng_next_json,
+                        &esp_next_json,
+                        &ita_next_json,
+                        &ger_next_json,
+                    ] {
+                        if let Some(json) = json_opt.as_ref() {
+                            soccer_matches.extend(parse_soccer_matches(json));
+                        }
+                    }
 
-                soccer_matches.sort_by(|a, b| a.1.cmp(&b.1));
-                soccer_matches.dedup_by_key(|m| m.1.clone());
+                    soccer_matches.sort_by(|a, b| a.1.cmp(&b.1));
+                    soccer_matches.dedup_by_key(|m| m.1.clone());
 
-                for (series_id, match_id, title, status, league_name, start_time) in soccer_matches
-                {
-                    discovered_matches.push(DiscoveredMatch {
-                        sport: SportType::Soccer,
-                        series_id,
-                        match_id,
-                        title,
-                        status,
-                        league_name,
-                        start_time,
-                    });
-                }
+                    Some(
+                        soccer_matches
+                            .into_iter()
+                            .map(
+                                |(series_id, match_id, title, status, league_name, start_time)| {
+                                    DiscoveredMatch {
+                                        sport: SportType::Soccer,
+                                        series_id,
+                                        match_id,
+                                        title,
+                                        status,
+                                        league_name,
+                                        start_time,
+                                    }
+                                },
+                            )
+                            .collect(),
+                    )
+                } else {
+                    None
+                };
+
+                // Merge fresh slices over the previous list so the failed
+                // sport's slice survives a partial outage.
+                let prev_snapshot: Vec<DiscoveredMatch> = match_state
+                    .active_matches
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .iter()
+                    .map(
+                        |(sport, series_id, match_id, title, status, league_name, start_time)| {
+                            DiscoveredMatch {
+                                sport: *sport,
+                                series_id: series_id.clone(),
+                                match_id: match_id.clone(),
+                                title: title.clone(),
+                                status: status.clone(),
+                                league_name: league_name.clone(),
+                                start_time: start_time.clone(),
+                            }
+                        },
+                    )
+                    .collect();
+                let discovered_matches =
+                    merge_discovered_per_sport(&prev_snapshot, fresh_cricket, fresh_soccer);
 
                 // Update active matches list (typed `ActiveMatchEntry` vec).
                 let discovered_tuples: Vec<ActiveMatchEntry> = discovered_matches
@@ -348,13 +467,18 @@ pub async fn start_polling(
                 {
                     // Recover from a poisoned lock instead of dropping the update:
                     // a panic elsewhere must not freeze the dashboard list.
+                    // Identity compare (sport, series_id, match_id, status):
+                    // title/league/start-time text flips update silently
+                    // without re-presenting the dashboard every 60s.
                     let mut active_m = match_state
                         .active_matches
                         .lock()
                         .unwrap_or_else(|e| e.into_inner());
-                    if *active_m != discovered_tuples {
+                    if discovery_identity_changed(&active_m, &discovered_tuples) {
                         *active_m = discovered_tuples;
                         list_changed = true;
+                    } else if *active_m != discovered_tuples {
+                        *active_m = discovered_tuples;
                     }
                 }
 
@@ -587,7 +711,9 @@ pub async fn start_polling(
             last_completed_match_id = None;
             last_cricket_ball_id = None;
             last_soccer_event_id = None;
-            sleep_duration = Duration::from_secs(30); // Re-check scoreboard every 30s for new live matches
+            // Idle with no selection: wake every 30s; the 60s scoreboard gate
+            // above still decides whether a fresh discovery fetch runs.
+            sleep_duration = Duration::from_secs(30);
         }
 
         // Cap the sleep so the 60s scoreboard refresh still runs while a
@@ -717,6 +843,69 @@ mod tests {
         assert!(any_scoreboard_fetch_ok([false, false, true, false]));
         assert!(any_scoreboard_fetch_ok([false, false, false, true]));
         assert!(any_scoreboard_fetch_ok([true, true, true, true]));
+    }
+
+    fn test_discovered(sport: SportType, series: &str, id: &str) -> DiscoveredMatch {
+        DiscoveredMatch {
+            sport,
+            series_id: series.to_string(),
+            match_id: id.to_string(),
+            title: "title".to_string(),
+            status: "in".to_string(),
+            league_name: "league".to_string(),
+            start_time: "start".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_partial_outage_keeps_failed_sport_slice() {
+        // Soccer outage (fresh_soccer=None) preserves soccer entries while
+        // cricket replaces its slice, and vice versa.
+        let prev = vec![
+            test_discovered(SportType::Cricket, "14135", "1413511"),
+            test_discovered(SportType::Soccer, "eng.1", "700100"),
+        ];
+        let fresh_cricket = vec![test_discovered(SportType::Cricket, "14135", "1413512")];
+        let merged = merge_discovered_per_sport(&prev, Some(fresh_cricket), None);
+        assert_eq!(merged.len(), 2);
+        assert!(merged.iter().any(|d| d.match_id == "1413512"));
+        assert!(merged.iter().any(|d| d.match_id == "700100"));
+
+        let fresh_soccer = vec![test_discovered(SportType::Soccer, "eng.1", "700101")];
+        let merged2 = merge_discovered_per_sport(&prev, None, Some(fresh_soccer));
+        assert_eq!(merged2.len(), 2);
+        assert!(merged2.iter().any(|d| d.match_id == "1413511"));
+        assert!(merged2.iter().any(|d| d.match_id == "700101"));
+    }
+
+    #[test]
+    fn test_next_month_ym_rolls_over_december() {
+        assert_eq!(next_month_ym_for_year_month(2026, 1), "202602");
+        assert_eq!(next_month_ym_for_year_month(2026, 11), "202612");
+        assert_eq!(next_month_ym_for_year_month(2026, 12), "202701");
+        // Early-month dates must still land in next month (not now+20d).
+        assert_eq!(next_month_ym_for_year_month(2026, 9), "202610");
+    }
+
+    #[test]
+    fn test_discovery_identity_ignores_text_flips() {
+        // Same identity, different title text: no re-fire.
+        let prev = vec![test_entry(SportType::Cricket, "14135", "1413511")];
+        let mut same_identity = prev.clone();
+        same_identity[0].3 = "new title text".to_string();
+        same_identity[0].5 = "new league".to_string();
+        assert!(!discovery_identity_changed(&prev, &same_identity));
+
+        // Status flip is identity: re-fires.
+        let mut status_flip = prev.clone();
+        status_flip[0].4 = "pre".to_string();
+        assert!(discovery_identity_changed(&prev, &status_flip));
+
+        // Added/removed rows re-fire.
+        assert!(discovery_identity_changed(&prev, &[]));
+        let mut added = prev.clone();
+        added.push(test_entry(SportType::Soccer, "eng.1", "700100"));
+        assert!(discovery_identity_changed(&prev, &added));
     }
 
     #[tokio::test]

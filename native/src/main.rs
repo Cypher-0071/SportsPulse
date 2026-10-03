@@ -31,7 +31,8 @@ use windows::Win32::System::Threading::GetCurrentProcess;
 use windows::Win32::System::Threading::{CreateMutexW, ExitProcess};
 #[cfg(windows)]
 use windows::Win32::UI::HiDpi::{
-    GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    GetDpiForSystem, GetDpiForWindow, SetProcessDpiAwarenessContext,
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 
 #[cfg(windows)]
@@ -104,13 +105,13 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW,
-    GetWindowLongPtrW, GetWindowRect, IsIconic, IsWindowVisible, KillTimer, LoadCursorW,
-    MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW, SendMessageW,
+    CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow, DispatchMessageW, GetCursorPos,
+    GetMessageW, GetWindowLongPtrW, GetWindowRect, IsIconic, IsWindowVisible, KillTimer,
+    LoadCursorW, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW, SendMessageW,
     SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
     SystemParametersInfoW, TranslateMessage, CREATESTRUCTW, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW,
-    GWLP_USERDATA, HCURSOR, HMENU, HTCAPTION, ICON_BIG, ICON_SMALL, IDC_ARROW, MB_ICONERROR, MB_OK,
-    MINMAXINFO, MSG, SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_MINIMIZE,
+    GWLP_USERDATA, HCURSOR, HICON, HMENU, HTCAPTION, ICON_BIG, ICON_SMALL, IDC_ARROW, MB_ICONERROR,
+    MB_OK, MINMAXINFO, MSG, SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_MINIMIZE,
     SW_RESTORE, SW_SHOW, SW_SHOWNOACTIVATE, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WM_APP, WM_CLOSE,
     WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_EXITSIZEMOVE,
     WM_GETMINMAXINFO, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
@@ -211,6 +212,11 @@ struct AppState {
     dashboard_restore_rect: RECT,
     /// Real DPI from GetDpiForWindow (96 fallback); refreshed on WM_DPICHANGED.
     dpi: u32,
+    /// Owned icon handles (window big/small + tray): destroyed in WM_DESTROY
+    /// after tray removal. HICON is Copy; TrayIcon only borrows its copy.
+    window_icon_big: HICON,
+    window_icon_small: HICON,
+    tray_hicon: HICON,
     /// Pending drag on maximized dashboard title bar: (grab_x, grab_y, start_cursor).
     title_drag_pending: Option<(f32, f32, POINT)>,
     /// Active scrollbar thumb-drag: cursor grab offset below the thumb top, in
@@ -487,7 +493,16 @@ unsafe fn toggle_dashboard(state: &mut AppState) {
             let _ = ShowWindow(state.dash_hwnd, SW_RESTORE);
             let _ = SetForegroundWindow(state.dash_hwnd);
         } else {
+            // Full hide hygiene: stop timers, drop drags/capture, clear hover
+            // so a reopen never paints stale highlights or resumes a dead drag.
             let _ = KillTimer(state.dash_hwnd, DASH_LOADER_TIMER);
+            let _ = KillTimer(state.dash_hwnd, DASH_SCROLL_TIMER);
+            state.scrollbar_drag = None;
+            state.title_drag_pending = None;
+            let _ = ReleaseCapture();
+            if let Some(r) = state.dash_renderer.as_mut() {
+                r.clear_hover();
+            }
             let _ = ShowWindow(state.dash_hwnd, SW_HIDE);
         }
     } else {
@@ -575,10 +590,19 @@ unsafe fn present_dashboard(state: &mut AppState, pos: POINT) {
         }
     }
     if loading {
-        let _ = SetTimer(state.dash_hwnd, DASH_LOADER_TIMER, DASH_LOADER_MS, None);
+        set_timer_checked(state.dash_hwnd, DASH_LOADER_TIMER, DASH_LOADER_MS);
     } else {
         let _ = KillTimer(state.dash_hwnd, DASH_LOADER_TIMER);
     }
+}
+
+/// SetTimer that fails loudly in debug builds: a 0 return (timer table
+/// exhausted) would silently lose loader/flash/scroll/retry ticks. Release
+/// keeps the previous best-effort behavior.
+#[cfg(windows)]
+unsafe fn set_timer_checked(hwnd: HWND, id: usize, ms: u32) {
+    let ok = SetTimer(hwnd, id, ms, None) != 0;
+    debug_assert!(ok, "SetTimer failed");
 }
 
 /// Same-thread post with one immediate retry if the queue is momentarily full,
@@ -598,7 +622,7 @@ unsafe fn post_ui_msg(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) {
             WM_APP_UNTRACK => POST_RETRY_UNTRACK_TIMER,
             _ => POST_RETRY_SCORE_TIMER,
         };
-        let _ = SetTimer(hwnd, retry_timer, POST_RETRY_DELAY_MS, None);
+        set_timer_checked(hwnd, retry_timer, POST_RETRY_DELAY_MS);
     }
 }
 
@@ -703,6 +727,14 @@ unsafe extern "system" fn wnd_proc(
 ) -> LRESULT {
     let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AppState;
 
+    // SAFETY (re-entrancy): arms below hold `&mut AppState` across sync Win32
+    // calls (SetWindowPos/ShowWindow/ULW). That is sound because the messages
+    // those calls dispatch synchronously (WINDOWPOS*/SHOWWINDOW/STYLE*) hit
+    // the DefWindowProcW fallthrough, which never re-borrows state. The day
+    // an arm is added for any synchronously-dispatched message, every live
+    // borrow across a sync call must be re-audited. Async messages
+    // (PAINT/TIMER/MOUSE/HOTKEY) can never nest inside a sync call.
+
     // Explorer restart recovery: re-ADD the tray icon (TaskbarCreated broadcast).
     let taskbar_created = TASKBAR_CREATED_MSG.load(Ordering::Acquire);
     if taskbar_created != 0 && msg == taskbar_created {
@@ -759,22 +791,22 @@ unsafe extern "system" fn wnd_proc(
                 // instead of silently dropping the update.
                 let _ = KillTimer(hwnd, POST_RETRY_SCORE_TIMER);
                 if PostMessageW(hwnd, WM_APP_SCORE_UPDATE, WPARAM(0), LPARAM(0)).is_err() {
-                    let _ = SetTimer(hwnd, POST_RETRY_SCORE_TIMER, POST_RETRY_DELAY_MS, None);
+                    set_timer_checked(hwnd, POST_RETRY_SCORE_TIMER, POST_RETRY_DELAY_MS);
                 }
             } else if wparam.0 == POST_RETRY_EVENT_TIMER {
                 let _ = KillTimer(hwnd, POST_RETRY_EVENT_TIMER);
                 if PostMessageW(hwnd, WM_APP_MATCH_EVENT, WPARAM(0), LPARAM(0)).is_err() {
-                    let _ = SetTimer(hwnd, POST_RETRY_EVENT_TIMER, POST_RETRY_DELAY_MS, None);
+                    set_timer_checked(hwnd, POST_RETRY_EVENT_TIMER, POST_RETRY_DELAY_MS);
                 }
             } else if wparam.0 == POST_RETRY_DISCOVERED_TIMER {
                 let _ = KillTimer(hwnd, POST_RETRY_DISCOVERED_TIMER);
                 if PostMessageW(hwnd, WM_APP_MATCHES_DISCOVERED, WPARAM(0), LPARAM(0)).is_err() {
-                    let _ = SetTimer(hwnd, POST_RETRY_DISCOVERED_TIMER, POST_RETRY_DELAY_MS, None);
+                    set_timer_checked(hwnd, POST_RETRY_DISCOVERED_TIMER, POST_RETRY_DELAY_MS);
                 }
             } else if wparam.0 == POST_RETRY_UNTRACK_TIMER {
                 let _ = KillTimer(hwnd, POST_RETRY_UNTRACK_TIMER);
                 if PostMessageW(hwnd, WM_APP_UNTRACK, WPARAM(0), LPARAM(0)).is_err() {
-                    let _ = SetTimer(hwnd, POST_RETRY_UNTRACK_TIMER, POST_RETRY_DELAY_MS, None);
+                    set_timer_checked(hwnd, POST_RETRY_UNTRACK_TIMER, POST_RETRY_DELAY_MS);
                 }
             }
             LRESULT(0)
@@ -799,13 +831,20 @@ unsafe extern "system" fn wnd_proc(
                     SWP_NOACTIVATE | SWP_NOZORDER,
                 );
                 place_and_present_overlay(hwnd, state, &state.cache.get());
+                resync_visible_popup(state, hwnd);
             }
             LRESULT(0)
         }
         WM_DISPLAYCHANGE => {
-            // Monitor topology changed: re-pin the overlay to the (possibly new) work area.
+            // Monitor topology changed: refresh DPI (a move can also mean a
+            // new scale factor), re-pin the overlay, re-sync a visible popup.
             if let Some(state) = state_ptr.as_mut() {
+                let dpi = GetDpiForWindow(hwnd);
+                if dpi != 0 {
+                    state.dpi = dpi;
+                }
                 place_and_present_overlay(hwnd, state, &state.cache.get());
+                resync_visible_popup(state, hwnd);
             }
             LRESULT(0)
         }
@@ -826,7 +865,13 @@ unsafe extern "system" fn wnd_proc(
                 if let Some(s) = &score {
                     // Full ESPN string for the tooltip (isolated + pre-truncated
                     // to the 128-char tip cap).
-                    let tip = ui_text(&format!("{} — {}", s.match_title, s.team1.score), 110);
+                    let mut tip = ui_text(&format!("{} — {}", s.match_title, s.team1.score), 110);
+                    // szTip blind-cuts at 127 UTF-16 units (can split a
+                    // surrogate): pre-cap on char boundaries so the tray's
+                    // encode_utf16 never sees a truncated tail.
+                    while tip.encode_utf16().count() > 127 {
+                        tip.pop();
+                    }
                     state.tray.update_tooltip(&tip);
                 }
             }
@@ -849,7 +894,7 @@ unsafe extern "system" fn wnd_proc(
                         // Reduced-motion: no flash timer — the in-card flash
                         // persists until the next event or hide.
                         if !reduced_motion() {
-                            let _ = SetTimer(hwnd, OVERLAY_FLASH_TIMER, timeout_ms, None);
+                            set_timer_checked(hwnd, OVERLAY_FLASH_TIMER, timeout_ms);
                         }
                     } else {
                         let dpi = state.dpi;
@@ -1005,20 +1050,45 @@ unsafe extern "system" fn wnd_proc(
             // no ghost icon survives a forced quit).
             let _ = UnregisterHotKey(hwnd, HOTKEY_ID);
             let _ = UnregisterHotKey(hwnd, HOTKEY_ID_FALLBACK);
-            if let Some(state) = state_ptr.as_mut() {
-                state.tray.remove();
-                if !state.dash_hwnd.0.is_null() {
-                    let _ = DestroyWindow(state.dash_hwnd);
+            // Snapshot owned handles first so no &mut borrow is held across
+            // the synchronous DestroyWindow calls below.
+            let (dash_hwnd, popup_hwnd, icon_big, icon_small, tray_hicon, owns_com) =
+                if let Some(state) = state_ptr.as_mut() {
+                    state.tray.remove();
+                    (
+                        state.dash_hwnd,
+                        state.popup_win.as_ref().map(|p| p.hwnd).unwrap_or_default(),
+                        state.window_icon_big,
+                        state.window_icon_small,
+                        state.tray_hicon,
+                        COM_NEEDS_UNINIT.swap(false, Ordering::Release),
+                    )
+                } else {
+                    (
+                        HWND::default(),
+                        HWND::default(),
+                        HICON::default(),
+                        HICON::default(),
+                        HICON::default(),
+                        false,
+                    )
+                };
+            if !dash_hwnd.0.is_null() {
+                let _ = DestroyWindow(dash_hwnd);
+            }
+            if !popup_hwnd.0.is_null() {
+                let _ = DestroyWindow(popup_hwnd);
+            }
+            // Owned icons, after tray removal (the tray no longer references
+            // tray_hicon). DestroyIcon lives in Win32_UI_WindowsAndMessaging.
+            for icon in [icon_big, icon_small, tray_hicon] {
+                if !icon.is_invalid() {
+                    let _ = DestroyIcon(icon);
                 }
-                if let Some(popup) = state.popup_win.as_ref() {
-                    if !popup.hwnd.0.is_null() {
-                        let _ = DestroyWindow(popup.hwnd);
-                    }
-                }
-                // P0-9 COM balance: only uninitialize what we initialized.
-                if COM_NEEDS_UNINIT.swap(false, Ordering::Release) {
-                    CoUninitialize();
-                }
+            }
+            // P0-9 COM balance: only uninitialize what we initialized.
+            if owns_com {
+                CoUninitialize();
             }
             PostQuitMessage(0);
             LRESULT(0)
@@ -1067,6 +1137,11 @@ unsafe extern "system" fn dashboard_wnd_proc(
     // via HMAIN; never cached across calls.
     let parent_hwnd = HWND(HMAIN.load(Ordering::Acquire) as *mut _);
 
+    // SAFETY (re-entrancy): same contract as wnd_proc above — `&mut AppState`
+    // across sync Win32 calls is sound only because synchronously-dispatched
+    // messages (WINDOWPOS*/SHOWWINDOW/STYLE*) fall through to DefWindowProcW.
+    // Re-audit on any new arm for such messages.
+
     match msg {
         WM_NCCREATE => {
             // Same backstop as the main proc: honor a non-null lpCreateParams
@@ -1112,16 +1187,21 @@ unsafe extern "system" fn dashboard_wnd_proc(
                     h as i32,
                     SWP_NOACTIVATE,
                 );
-                if let Some(r) = state.dash_renderer.as_mut() {
-                    let _ = r.resize(w, h, dpi);
-                }
+                // No explicit r.resize here: present_dashboard_hwnd resizes +
+                // presents from the live window rect.
                 present_dashboard_hwnd(state, hwnd);
             }
             LRESULT(0)
         }
         WM_DISPLAYCHANGE => {
-            // Monitor topology changed: keep maximized dashboards glued to the work area.
+            // Monitor topology changed: refresh DPI (a move can also mean a
+            // new scale factor), then keep the dashboard inside the new work
+            // area — maximized stays glued, non-max gets clamped in.
             if let Some(state) = state_ptr.as_mut() {
+                let dpi = GetDpiForWindow(hwnd);
+                if dpi != 0 {
+                    state.dpi = dpi;
+                }
                 if state.dash_renderer.as_ref().is_some_and(|r| r.is_maximized) {
                     let wa = work_area_for(hwnd);
                     let _ = SetWindowPos(
@@ -1134,16 +1214,34 @@ unsafe extern "system" fn dashboard_wnd_proc(
                         SWP_NOACTIVATE,
                     );
                     if let Some(r) = state.dash_renderer.as_mut() {
-                        let _ = r.resize((wa.right - wa.left) as u32, (wa.bottom - wa.top) as u32, state.dpi);
+                        let _ = r.resize(
+                            (wa.right - wa.left) as u32,
+                            (wa.bottom - wa.top) as u32,
+                            state.dpi,
+                        );
                     }
-                    present_dashboard_hwnd(state, hwnd);
+                } else {
+                    let wa = work_area_for(hwnd);
+                    let mut rect = RECT::default();
+                    if GetWindowRect(hwnd, &mut rect).is_ok() {
+                        let w = rect.right - rect.left;
+                        let h = rect.bottom - rect.top;
+                        let cw = w.min(wa.right - wa.left);
+                        let ch = h.min(wa.bottom - wa.top);
+                        let nx = rect.left.clamp(wa.left, wa.right - cw);
+                        let ny = rect.top.clamp(wa.top, wa.bottom - ch);
+                        if nx != rect.left || ny != rect.top || cw != w || ch != h {
+                            let _ = SetWindowPos(hwnd, None, nx, ny, cw, ch, SWP_NOACTIVATE);
+                        }
+                    }
                 }
+                present_dashboard_hwnd(state, hwnd);
             }
             LRESULT(0)
         }
         WM_SIZE => {
             let new_w = (lparam.0 & 0xFFFF) as u32;
-            let new_h = (lparam.0 >> 16) as u32;
+            let new_h = ((lparam.0 >> 16) & 0xFFFF) as u32;
             if !IsIconic(hwnd).as_bool() && new_w > 0 && new_h > 0 {
                 if let Some(state) = state_ptr.as_mut() {
                     let wa = work_area_for(hwnd);
@@ -1247,6 +1345,9 @@ unsafe extern "system" fn dashboard_wnd_proc(
                             r.active_sport = sport;
                             r.scroll_offset = 0.0;
                             r.target_scroll_offset = 0.0;
+                            // Indices belong to the old sport's list.
+                            r.hover_index = None;
+                            r.action_hover_index = None;
                             let _ = KillTimer(hwnd, DASH_SCROLL_TIMER);
                             true
                         } else {
@@ -1396,6 +1497,7 @@ unsafe extern "system" fn dashboard_wnd_proc(
                         || r.close_hover
                         || r.cricket_hover
                         || r.football_hover
+                        || r.scroll_hover
                 });
                 if let Some(r) = state.dash_renderer.as_mut() {
                     r.clear_hover();
@@ -1424,7 +1526,7 @@ unsafe extern "system" fn dashboard_wnd_proc(
                 };
                 if target_changed || still_anim {
                     if still_anim {
-                        let _ = SetTimer(hwnd, DASH_SCROLL_TIMER, DASH_SCROLL_MS, None);
+                        set_timer_checked(hwnd, DASH_SCROLL_TIMER, DASH_SCROLL_MS);
                     }
                     let mut pt = POINT::default();
                     if GetCursorPos(&mut pt).is_ok() {
@@ -1596,15 +1698,28 @@ unsafe extern "system" fn dashboard_wnd_proc(
                     .map(|r| r.hit_test(x, y, state.dash_matches.len()));
                 match hit {
                     Some(Some(HitTarget::MinimizeButton)) => {
+                        state.scrollbar_drag = None;
+                        state.title_drag_pending = None;
+                        let _ = ReleaseCapture();
+                        let _ = KillTimer(hwnd, DASH_LOADER_TIMER);
                         let _ = KillTimer(hwnd, DASH_SCROLL_TIMER);
+                        if let Some(r) = state.dash_renderer.as_mut() {
+                            r.clear_hover();
+                        }
                         let _ = ShowWindow(hwnd, SW_MINIMIZE);
                     }
                     Some(Some(HitTarget::MaximizeButton)) => {
                         toggle_dashboard_maximize(state);
                     }
                     Some(Some(HitTarget::CloseButton)) => {
+                        state.scrollbar_drag = None;
+                        state.title_drag_pending = None;
+                        let _ = ReleaseCapture();
                         let _ = KillTimer(hwnd, DASH_LOADER_TIMER);
                         let _ = KillTimer(hwnd, DASH_SCROLL_TIMER);
+                        if let Some(r) = state.dash_renderer.as_mut() {
+                            r.clear_hover();
+                        }
                         let _ = ShowWindow(hwnd, SW_HIDE);
                     }
                     Some(Some(HitTarget::CricketTab)) | Some(Some(HitTarget::FootballTab)) => {
@@ -1618,6 +1733,9 @@ unsafe extern "system" fn dashboard_wnd_proc(
                                 r.active_sport = sport;
                                 r.scroll_offset = 0.0;
                                 r.target_scroll_offset = 0.0;
+                                // Indices belong to the old sport's list.
+                                r.hover_index = None;
+                                r.action_hover_index = None;
                                 let _ = KillTimer(hwnd, DASH_SCROLL_TIMER);
                                 true
                             } else {
@@ -1677,7 +1795,16 @@ unsafe extern "system" fn dashboard_wnd_proc(
             LRESULT(0)
         }
         WM_CLOSE => {
+            if let Some(state) = state_ptr.as_mut() {
+                state.scrollbar_drag = None;
+                state.title_drag_pending = None;
+                if let Some(r) = state.dash_renderer.as_mut() {
+                    r.clear_hover();
+                }
+            }
+            let _ = ReleaseCapture();
             let _ = KillTimer(hwnd, DASH_LOADER_TIMER);
+            let _ = KillTimer(hwnd, DASH_SCROLL_TIMER);
             let _ = ShowWindow(hwnd, SW_HIDE);
             LRESULT(0)
         }
@@ -1770,7 +1897,7 @@ fn spawn_engine_worker(
 #[cfg(windows)]
 unsafe fn post_checked(hwnd: HWND, msg: u32, retry_timer: usize) {
     if PostMessageW(hwnd, msg, WPARAM(0), LPARAM(0)).is_err() {
-        let _ = SetTimer(hwnd, retry_timer, POST_RETRY_DELAY_MS, None);
+        set_timer_checked(hwnd, retry_timer, POST_RETRY_DELAY_MS);
     }
 }
 
@@ -1811,8 +1938,12 @@ fn main() {
         };
 
         // 1. Register Main Scoreboard Window Class
-        let icon_big = load_app_icon(32);
-        let icon_small = load_app_icon(16);
+        // DPI-scale the class icons like the tray icon (system DPI: no window
+        // exists yet for GetDpiForWindow).
+        let sys_dpi = GetDpiForSystem();
+        let sys_dpi = if sys_dpi == 0 { 96 } else { sys_dpi };
+        let icon_big = load_app_icon(scale_for_dpi(32, sys_dpi) as i32);
+        let icon_small = load_app_icon(scale_for_dpi(16, sys_dpi) as i32);
 
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
@@ -1943,6 +2074,9 @@ fn main() {
                 bottom: dash_pos.y + init_dash_h as i32,
             },
             dpi,
+            window_icon_big: icon_big,
+            window_icon_small: icon_small,
+            tray_hicon: tray_icon,
             title_drag_pending: None,
             scrollbar_drag: None,
         });
@@ -1985,7 +2119,7 @@ fn main() {
         }
 
         // 7. Start with the dashboard visible (overlay hidden until Track).
-        let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AppState;
+    let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AppState;
         if let Some(state) = state_ptr.as_mut() {
             present_dashboard(state, dash_pos);
         }
